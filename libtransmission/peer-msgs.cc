@@ -391,6 +391,11 @@ public:
         }
     }
 
+    void set_preferred_tracker(bool is_preferred) noexcept override
+    {
+        io->set_preferred_tracker(is_preferred);
+    }
+
     [[nodiscard]] bool is_peer_choked() const noexcept override
     {
         return peer_is_choked_;
@@ -880,6 +885,11 @@ bool popNextMetadataRequest(tr_peerMsgsImpl* msgs, int* setme)
     return true;
 }
 
+void updatePendingPieceRequests(tr_peerMsgsImpl* msgs)
+{
+    msgs->io->set_has_pending_piece_requests(!std::empty(msgs->peer_requested_));
+}
+
 void cancelAllRequestsToClient(tr_peerMsgsImpl* msgs)
 {
     if (auto const must_send_rej = msgs->io->supports_fext(); must_send_rej)
@@ -891,6 +901,7 @@ void cancelAllRequestsToClient(tr_peerMsgsImpl* msgs)
     }
 
     msgs->peer_requested_.clear();
+    updatePendingPieceRequests(msgs);
 }
 
 // ---
@@ -1327,6 +1338,7 @@ void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
     {
         msgs->peer_requested_.emplace_back(*req);
         prefetchPieces(msgs);
+        updatePendingPieceRequests(msgs);
     }
     else if (msgs->io->supports_fext())
     {
@@ -1545,6 +1557,7 @@ ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmissi
             if (auto iter = std::find(std::begin(requests), std::end(requests), r); iter != std::end(requests))
             {
                 requests.erase(iter);
+                updatePendingPieceRequests(msgs);
 
                 // bep6: "Even when a request is cancelled, the peer
                 // receiving the cancel should respond with either the
@@ -1985,6 +1998,7 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
     {
         req = msgs->peer_requested_.front();
         msgs->peer_requested_.erase(std::begin(msgs->peer_requested_));
+        updatePendingPieceRequests(msgs);
 
         if (msgs->isValidRequest(req) && msgs->torrent->hasPiece(req.index))
         {

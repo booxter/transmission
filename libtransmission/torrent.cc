@@ -2168,7 +2168,7 @@ void tr_torrent::onTrackerResponse(tr_tracker_event const* event)
     {
     case tr_tracker_event::Type::Peers:
         tr_logAddTraceTor(this, fmt::format("Got {} peers from tracker", std::size(event->pex)));
-        tr_peerMgrAddPex(this, TR_PEER_FROM_TRACKER, std::data(event->pex), std::size(event->pex));
+        tr_peerMgrAddPex(this, TR_PEER_FROM_TRACKER, std::data(event->pex), std::size(event->pex), event->is_preferred);
         break;
 
     case tr_tracker_event::Type::Counts:

@@ -229,6 +229,8 @@ public:
     void setLimits(tr_bandwidth_limits const* limits);
 
 private:
+    static constexpr uint8_t PreferredUploadHoldPulses = 6U;
+
     struct RateControl
     {
         std::array<uint64_t, HistorySize> date_;
@@ -259,7 +261,7 @@ private:
 
     static void notifyBandwidthConsumedBytes(uint64_t now, RateControl* r, size_t size);
 
-    static void phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
+    [[nodiscard]] static size_t phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
 
     void allocateBandwidth(
         tr_priority_t parent_priority,
@@ -271,6 +273,7 @@ private:
     tr_bandwidth* parent_ = nullptr;
     std::weak_ptr<tr_peerIo> peer_;
     tr_priority_t priority_ = 0;
+    uint8_t preferred_upload_hold_pulses_ = 0;
 };
 
 /* @} */

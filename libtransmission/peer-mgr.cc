@@ -59,6 +59,9 @@ static auto constexpr MyflagBanned = int{ 1 };
 // if they try to connect to us it's okay
 static auto constexpr MyflagUnreachable = int{ 2 };
 
+// use for bitwise operations w/peer_atom.flags2
+static auto constexpr MyflagPreferredTracker = int{ 4 };
+
 static auto constexpr CancelHistorySec = int{ 60 };
 
 // ---
@@ -980,6 +983,7 @@ void create_bit_torrent_peer(tr_torrent* tor, std::shared_ptr<tr_peerIo> io, str
 
     tr_swarm* swarm = tor->swarm;
 
+    io->set_preferred_tracker((atom->flags2 & MyflagPreferredTracker) != 0);
     auto* peer = tr_peerMsgsNew(tor, atom, std::move(io), &tr_swarm::peerCallbackFunc, swarm);
     peer->client = client;
     atom->is_connected = true;
@@ -1143,7 +1147,7 @@ void tr_peerMgrSetSwarmIsAllSeeds(tr_torrent* tor)
     swarm->markAllSeedsFlagDirty();
 }
 
-size_t tr_peerMgrAddPex(tr_torrent* tor, uint8_t from, tr_pex const* pex, size_t n_pex)
+size_t tr_peerMgrAddPex(tr_torrent* tor, uint8_t from, tr_pex const* pex, size_t n_pex, bool const is_preferred_tracker)
 {
     size_t n_used = 0;
     tr_swarm* s = tor->swarm;
@@ -1154,7 +1158,25 @@ size_t tr_peerMgrAddPex(tr_torrent* tor, uint8_t from, tr_pex const* pex, size_t
         if (tr_isPex(pex) && /* safeguard against corrupt data */
             !s->manager->session->addressIsBlocked(pex->addr) && pex->is_valid_for_peers())
         {
-            s->ensure_atom_exists(pex->addr, pex->port, pex->flags, from);
+            auto* const atom = s->ensure_atom_exists(pex->addr, pex->port, pex->flags, from);
+            if (is_preferred_tracker)
+            {
+                atom->flags2 |= MyflagPreferredTracker;
+
+                if (atom->is_connected)
+                {
+                    for (auto* const peer : s->peers)
+                    {
+                        if (peer->atom == atom)
+                        {
+                            peer->set_preferred_tracker(true);
+                            tr_logAddTraceSwarm(s, fmt::format("promoted connected peer {} to preferred-tracker", atom->display_name()));
+                            break;
+                        }
+                    }
+                }
+            }
+
             ++n_used;
         }
     }
@@ -1740,15 +1762,28 @@ namespace
 {
 namespace rechoke_uploads_helpers
 {
+[[nodiscard]] constexpr bool isPreferredTrackerPeer(peer_atom const* atom) noexcept
+{
+    return atom != nullptr && (atom->flags2 & MyflagPreferredTracker) != 0;
+}
+
 struct ChokeData
 {
-    ChokeData(tr_peerMsgs* msgs_in, int rate_in, uint8_t salt_in, bool is_interested_in, bool was_choked_in, bool is_choked_in)
+    ChokeData(
+        tr_peerMsgs* msgs_in,
+        int rate_in,
+        uint8_t salt_in,
+        bool is_interested_in,
+        bool was_choked_in,
+        bool is_choked_in,
+        bool is_preferred_in)
         : msgs{ msgs_in }
         , rate{ rate_in }
         , salt{ salt_in }
         , is_interested{ is_interested_in }
         , was_choked{ was_choked_in }
         , is_choked{ is_choked_in }
+        , is_preferred{ is_preferred_in }
     {
     }
 
@@ -1758,9 +1793,15 @@ struct ChokeData
     bool is_interested;
     bool was_choked;
     bool is_choked;
+    bool is_preferred;
 
     [[nodiscard]] constexpr auto compare(ChokeData const& that) const noexcept // <=>
     {
+        if (this->is_preferred != that.is_preferred) // prefer preferred-tracker peers first
+        {
+            return this->is_preferred ? -1 : 1;
+        }
+
         if (this->rate != that.rate) // prefer higher overall speeds
         {
             return this->rate > that.rate ? -1 : 1;
@@ -1854,7 +1895,8 @@ void rechokeUploads(tr_swarm* s, uint64_t const now)
                 salter(),
                 peer->is_peer_interested(),
                 peer->is_peer_choked(),
-                true);
+                true,
+                isPreferredTrackerPeer(peer->atom));
         }
     }
 
@@ -2364,6 +2406,10 @@ struct peer_candidate
 
     /* prefer peers that we might be able to upload to */
     i = (atom.flags & ADDED_F_SEED_FLAG) == 0 ? 0 : 1;
+    score = addValToKey(score, 1, i);
+
+    /* prefer peers learned from preferred trackers */
+    i = (atom.flags2 & MyflagPreferredTracker) != 0 ? 0 : 1;
     score = addValToKey(score, 1, i);
 
     /* Prefer peers that we got from more trusted sources.

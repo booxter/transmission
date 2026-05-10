@@ -11,11 +11,13 @@
 
 #include <array>
 #include <chrono>
+#include <ctime>
 #include <cstdint> // uint64_t
 #include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <set>
 #include <vector>
 
 #include "transmission.h"
@@ -34,6 +36,27 @@ void tr_tracker_http_announce(tr_session const* session, tr_announce_request con
 void tr_announcerParseHttpAnnounceResponse(tr_announce_response& response, std::string_view benc, std::string_view log_name);
 
 void tr_announcerParseHttpScrapeResponse(tr_scrape_response& response, std::string_view benc, std::string_view log_name);
+
+using tr_preferred_tracker_hosts = std::set<std::string, std::less<>>;
+
+[[nodiscard]] std::optional<std::string> tr_announcerGetPreferredTrackerHost(std::string_view entry);
+
+[[nodiscard]] tr_preferred_tracker_hosts tr_announcerParsePreferredTrackerHosts(std::string_view text);
+
+struct tr_announce_upkeep_priority
+{
+    int announce_event_priority = 0;
+    bool is_preferred = false;
+    int64_t downloader_count = 0;
+    bool is_done = false;
+    uint64_t byte_count = 0;
+    time_t announce_at = 0;
+    size_t tie_breaker = 0;
+};
+
+[[nodiscard]] int tr_compare_announce_upkeep_priority(
+    tr_announce_upkeep_priority const& a,
+    tr_announce_upkeep_priority const& b) noexcept;
 
 tr_interned_string tr_announcerGetKey(tr_url_parsed_t const& parsed);
 

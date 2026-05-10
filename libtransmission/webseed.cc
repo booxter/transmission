@@ -245,6 +245,10 @@ public:
         return have_;
     }
 
+    void set_preferred_tracker(bool /*is_preferred*/) noexcept override
+    {
+    }
+
     void gotPieceData(uint32_t n_bytes)
     {
         bandwidth_.notifyBandwidthConsumed(TR_DOWN, n_bytes, true, tr_time_msec());

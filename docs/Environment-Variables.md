@@ -11,6 +11,7 @@ Users can set environmental variables to override Transmission's default behavio
    $ transmission 2>runlog
    ```
  * If `TR_DHT_VERBOSE` is set, Transmission will log all of the DHT's activities in excruciating detail to standard error.
+ * If `TR_TRACKER_PRIORITY_FILE` is set, Transmission will load preferred tracker hosts from that file and prioritize those trackers ahead of other already-due announces. Peers learned from preferred trackers are also treated as preferred for peer connection and upload scheduling, so active preferred peers get first claim on available upload bandwidth before non-preferred peers. The file accepts one tracker host or announce URL per line; empty lines and text after `#` are ignored. This does not change tracker-provided `interval` or `min interval` values, and upload preference still depends on peers actively requesting data.
 
 ## Standard Variables Used by Transmission
  * If `TRANSMISSION_WEB_HOME` is _not_ set, non-Mac platforms will look for the [Web Interface](Web-Interface.md) files in `XDG_DATA_HOME` and in `XDG_DATA_DIRS` as described in [the XDG Base Directory Specification](https://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html#variables). `XDG_DATA_HOME` has a default value of `$HOME/.local/share/`.

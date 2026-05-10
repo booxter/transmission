@@ -47,6 +47,7 @@ namespace
 {
 /* unless the tracker says otherwise, rescrape this frequently */
 auto constexpr DefaultScrapeIntervalSec = int{ 60 * 30 };
+auto constexpr PreferredTrackerFileEnv = "TR_TRACKER_PRIORITY_FILE"sv;
 
 /* the value of the 'numwant' argument passed in tracker requests. */
 auto constexpr Numwant = int{ 80 };
@@ -228,7 +229,26 @@ public:
 
     tr_session* const session;
 
+    [[nodiscard]] bool isPreferredTrackerHost(std::string_view host) const
+    {
+        return preferred_tracker_hosts_.find(host) != std::end(preferred_tracker_hosts_);
+    }
+
 private:
+    [[nodiscard]] static tr_preferred_tracker_hosts loadPreferredTrackerHosts()
+    {
+        auto const filename = tr_env_get_string(PreferredTrackerFileEnv);
+        if (std::empty(filename))
+        {
+            return {};
+        }
+
+        auto contents = std::vector<char>{};
+        return tr_loadFile(filename, contents) ?
+            tr_announcerParsePreferredTrackerHosts({ std::data(contents), std::size(contents) }) :
+            tr_preferred_tracker_hosts{};
+    }
+
     void flushCloseMessages()
     {
         for (auto& stop : stops_)
@@ -240,6 +260,8 @@ private:
     }
 
     static auto constexpr UpkeepInterval = 500ms;
+
+    tr_preferred_tracker_hosts const preferred_tracker_hosts_ = loadPreferredTrackerHosts();
 
     tr_announcer_udp& announcer_udp_;
 
@@ -264,6 +286,100 @@ std::unique_ptr<tr_announcer> tr_announcer::create(
     return std::make_unique<tr_announcer_impl>(session, announcer_udp, n_pending_stops);
 }
 
+std::optional<std::string> tr_announcerGetPreferredTrackerHost(std::string_view entry)
+{
+    if (auto const comment_pos = entry.find('#'); comment_pos != std::string_view::npos)
+    {
+        entry = entry.substr(0, comment_pos);
+    }
+
+    entry = tr_strvStrip(entry);
+    if (std::empty(entry))
+    {
+        return std::nullopt;
+    }
+
+    if (tr_strvContains(entry, "://"sv))
+    {
+        if (auto const parsed = tr_urlParseTracker(entry); parsed)
+        {
+            return tr_strlower(parsed->host);
+        }
+
+        return std::nullopt;
+    }
+
+    auto const url = fmt::format("http://{}/", entry);
+    if (auto const parsed = tr_urlParse(url); parsed)
+    {
+        return tr_strlower(parsed->host);
+    }
+
+    return std::nullopt;
+}
+
+tr_preferred_tracker_hosts tr_announcerParsePreferredTrackerHosts(std::string_view text)
+{
+    auto hosts = tr_preferred_tracker_hosts{};
+
+    auto line = std::string_view{};
+    while (tr_strvSep(&text, &line, '\n'))
+    {
+        if (auto host = tr_announcerGetPreferredTrackerHost(line); host)
+        {
+            hosts.emplace(std::move(*host));
+        }
+    }
+
+    return hosts;
+}
+
+int tr_compare_announce_upkeep_priority(tr_announce_upkeep_priority const& a, tr_announce_upkeep_priority const& b) noexcept
+{
+    /* prefer higher-priority events */
+    if (a.announce_event_priority != b.announce_event_priority)
+    {
+        return a.announce_event_priority > b.announce_event_priority ? -1 : 1;
+    }
+
+    /* then prefer user-selected trackers once the announce is already due */
+    if (a.is_preferred != b.is_preferred)
+    {
+        return a.is_preferred ? -1 : 1;
+    }
+
+    /* prefer swarms where we might upload */
+    if (a.downloader_count != b.downloader_count)
+    {
+        return a.downloader_count > b.downloader_count ? -1 : 1;
+    }
+
+    /* prefer swarms where we might download */
+    if (a.is_done != b.is_done)
+    {
+        return a.is_done ? 1 : -1;
+    }
+
+    /* prefer larger stats, to help ensure stats get recorded when stopping on shutdown */
+    if (a.byte_count != b.byte_count)
+    {
+        return a.byte_count > b.byte_count ? -1 : 1;
+    }
+
+    // announcements that have been waiting longer go first
+    if (a.announce_at != b.announce_at)
+    {
+        return a.announce_at < b.announce_at ? -1 : 1;
+    }
+
+    if (a.tie_breaker != b.tie_breaker)
+    {
+        return a.tie_breaker < b.tie_breaker ? -1 : 1;
+    }
+
+    return 0;
+}
+
 // ---
 
 /* a row in tr_tier's list of trackers */
@@ -274,6 +390,16 @@ struct tr_tracker
         , announce_url{ info.announce }
         , sitename{ info.sitename }
         , scrape_info{ std::empty(info.scrape) ? nullptr : announcer->scrape_info(info.scrape) }
+        , is_preferred{
+              [announcer, &info]()
+              {
+                  if (auto host = tr_announcerGetPreferredTrackerHost(info.announce.sv()); host)
+                  {
+                      return announcer->isPreferredTrackerHost(*host);
+                  }
+
+                  return false;
+              }() }
         , id{ info.id }
     {
     }
@@ -309,6 +435,7 @@ struct tr_tracker
     tr_interned_string const announce_url;
     std::string_view const sitename;
     tr_scrape_info* const scrape_info;
+    bool const is_preferred;
 
     std::string tracker_id;
 
@@ -389,6 +516,12 @@ struct tr_tier
         auto const* const tracker = currentTracker();
 
         return tracker == nullptr ? 0 : tracker->downloader_count + tracker->leecher_count;
+    }
+
+    [[nodiscard]] bool isPreferredTracker() const
+    {
+        auto const* const tracker = currentTracker();
+        return tracker != nullptr && tracker->is_preferred;
     }
 
     tr_tracker* useNextTracker()
@@ -702,6 +835,7 @@ void publishPeersPex(tr_tier* tier, int seeders, int leechers, std::vector<tr_pe
         e.seeders = seeders;
         e.leechers = leechers;
         e.pex = pex;
+        e.is_preferred = tier->isPreferredTracker();
         tr_logAddDebugTier(
             tier,
             fmt::format(
@@ -1478,41 +1612,25 @@ namespace upkeep_helpers
 {
 int compareAnnounceTiers(tr_tier const* a, tr_tier const* b)
 {
-    /* prefer higher-priority events */
-    if (auto const priority_a = a->announce_event_priority, priority_b = b->announce_event_priority; priority_a != priority_b)
-    {
-        return priority_a > priority_b ? -1 : 1;
-    }
+    auto priority_a = tr_announce_upkeep_priority{};
+    priority_a.announce_event_priority = a->announce_event_priority;
+    priority_a.is_preferred = a->isPreferredTracker();
+    priority_a.downloader_count = a->countDownloaders();
+    priority_a.is_done = a->tor->isDone();
+    priority_a.byte_count = a->byteCounts[TR_ANN_UP] + a->byteCounts[TR_ANN_DOWN];
+    priority_a.announce_at = a->announceAt;
+    priority_a.tie_breaker = static_cast<size_t>(a->id);
 
-    /* prefer swarms where we might upload */
-    if (auto const leechers_a = a->countDownloaders(), leechers_b = b->countDownloaders(); leechers_a != leechers_b)
-    {
-        return leechers_a > leechers_b ? -1 : 1;
-    }
+    auto priority_b = tr_announce_upkeep_priority{};
+    priority_b.announce_event_priority = b->announce_event_priority;
+    priority_b.is_preferred = b->isPreferredTracker();
+    priority_b.downloader_count = b->countDownloaders();
+    priority_b.is_done = b->tor->isDone();
+    priority_b.byte_count = b->byteCounts[TR_ANN_UP] + b->byteCounts[TR_ANN_DOWN];
+    priority_b.announce_at = b->announceAt;
+    priority_b.tie_breaker = static_cast<size_t>(b->id);
 
-    /* prefer swarms where we might download */
-    if (auto const is_done_a = a->tor->isDone(), is_done_b = b->tor->isDone(); is_done_a != is_done_b)
-    {
-        return is_done_a ? 1 : -1;
-    }
-
-    /* prefer larger stats, to help ensure stats get recorded when stopping on shutdown */
-    if (auto const xa = a->byteCounts[TR_ANN_UP] + a->byteCounts[TR_ANN_DOWN],
-        xb = b->byteCounts[TR_ANN_UP] + b->byteCounts[TR_ANN_DOWN];
-        xa != xb)
-    {
-        return xa > xb ? -1 : 1;
-    }
-
-    // announcements that have been waiting longer go first
-    if (a->announceAt != b->announceAt)
-    {
-        return a->announceAt < b->announceAt ? -1 : 1;
-    }
-
-    // the tiers are effectively equal priority, but add an arbitrary
-    // differentiation because ptrArray sorted mode hates equal items.
-    return a < b ? -1 : 1;
+    return tr_compare_announce_upkeep_priority(priority_a, priority_b);
 }
 
 void tierAnnounce(tr_announcer_impl* announcer, tr_tier* tier)

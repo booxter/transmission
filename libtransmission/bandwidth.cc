@@ -164,7 +164,7 @@ void tr_bandwidth::allocateBandwidth(
     }
 }
 
-void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
+size_t tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
 {
     // First phase of IO. Tries to distribute bandwidth fairly to keep faster
     // peers from starving the others.
@@ -176,6 +176,7 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
 
     // Give each peer `Increment` bandwidth bytes to use. Repeat this
     // process until we run out of bandwidth and/or peers that can use it.
+    auto total_bytes_used = size_t{};
     for (size_t n_unfinished = std::size(peers); n_unfinished > 0U;)
     {
         for (size_t i = 0; i < n_unfinished;)
@@ -186,6 +187,7 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
             static auto constexpr Increment = size_t{ 3000 };
 
             auto const bytes_used = peers[i]->flush(dir, Increment);
+            total_bytes_used += bytes_used;
             tr_logAddTrace(fmt::format("peer #{} of {} used {} bytes in this pass", i, n_unfinished, bytes_used));
 
             if (bytes_used != Increment)
@@ -200,17 +202,46 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
             }
         }
     }
+
+    return total_bytes_used;
 }
 
 void tr_bandwidth::allocate(unsigned int period_msec)
 {
+    auto const can_use_preferred_upload_bandwidth = [](tr_peerIo const& io) noexcept
+    {
+        return io.is_preferred_tracker() &&
+            (io.has_pending_piece_requests() || io.has_pending_piece_data()) &&
+            io.has_bandwidth_left(TR_UP);
+    };
+
     // keep these peers alive for the scope of this function
     auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
 
-    auto peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
-    auto& high = peer_arrays[0];
-    auto& normal = peer_arrays[1];
-    auto& low = peer_arrays[2];
+    auto preferred_upload_peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
+    auto other_upload_peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
+    auto download_peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
+    auto preferred_peer_count = size_t{};
+    auto preferred_pending_request_count = size_t{};
+    auto preferred_pending_piece_data_count = size_t{};
+    auto other_peer_count = size_t{};
+
+    auto add_peer = [](std::array<std::vector<tr_peerIo*>, 3>& peer_arrays, tr_priority_t priority, tr_peerIo* io)
+    {
+        switch (priority)
+        {
+        case TR_PRI_HIGH:
+            peer_arrays[0].push_back(io);
+            [[fallthrough]];
+
+        case TR_PRI_NORMAL:
+            peer_arrays[1].push_back(io);
+            [[fallthrough]];
+
+        default:
+            peer_arrays[2].push_back(io);
+        }
+    };
 
     // allocateBandwidth () is a helper function with two purposes:
     // 1. allocate bandwidth to b and its subtree
@@ -220,30 +251,56 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     for (auto const& io : refs)
     {
         io->flush_outgoing_protocol_msgs();
+        add_peer(download_peer_arrays, io->priority(), io.get());
 
-        switch (io->priority())
+        if (io->is_preferred_tracker())
         {
-        case TR_PRI_HIGH:
-            high.push_back(io.get());
-            [[fallthrough]];
-
-        case TR_PRI_NORMAL:
-            normal.push_back(io.get());
-            [[fallthrough]];
-
-        default:
-            low.push_back(io.get());
+            ++preferred_peer_count;
+            preferred_pending_request_count += io->has_pending_piece_requests() ? size_t{ 1 } : size_t{ 0 };
+            preferred_pending_piece_data_count += io->has_pending_piece_data() ? size_t{ 1 } : size_t{ 0 };
+            add_peer(preferred_upload_peer_arrays, io->priority(), io.get());
+        }
+        else
+        {
+            ++other_peer_count;
+            add_peer(other_upload_peer_arrays, io->priority(), io.get());
         }
     }
 
-    // First phase of IO. Tries to distribute bandwidth fairly to keep faster
-    // peers from starving the others. Loop through the peers, giving each a
-    // small chunk of bandwidth. Keep looping until we run out of bandwidth
-    // and/or peers that can use it
-    for (auto& peers : peer_arrays)
+    auto const hold_before = preferred_upload_hold_pulses_;
+    auto preferred_upload_bytes = size_t{};
+    for (auto& peers : preferred_upload_peer_arrays)
     {
-        phaseOne(peers, TR_UP);
-        phaseOne(peers, TR_DOWN);
+        preferred_upload_bytes += phaseOne(peers, TR_UP);
+    }
+
+    bool const has_preferred_upload_demand = std::any_of(
+        std::begin(refs),
+        std::end(refs),
+        [&can_use_preferred_upload_bandwidth](auto const& io) { return can_use_preferred_upload_bandwidth(*io); });
+
+    if (preferred_upload_bytes > 0U)
+    {
+        preferred_upload_hold_pulses_ = PreferredUploadHoldPulses;
+    }
+    else if (!has_preferred_upload_demand && preferred_upload_hold_pulses_ > 0U)
+    {
+        --preferred_upload_hold_pulses_;
+    }
+
+    bool const allow_other_uploads = !has_preferred_upload_demand && preferred_upload_hold_pulses_ == 0U;
+    auto other_upload_bytes = size_t{};
+    if (allow_other_uploads)
+    {
+        for (auto& peers : other_upload_peer_arrays)
+        {
+            other_upload_bytes += phaseOne(peers, TR_UP);
+        }
+    }
+
+    for (auto& peers : download_peer_arrays)
+    {
+        (void)phaseOne(peers, TR_DOWN);
     }
 
     // Second phase of IO. To help us scale in high bandwidth situations,
@@ -252,8 +309,26 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     // or (2) the next tr_bandwidth::allocate () call, when we start over again.
     for (auto const& io : refs)
     {
-        io->set_enabled(TR_UP, io->has_bandwidth_left(TR_UP));
+        auto const enable_upload = io->has_bandwidth_left(TR_UP) && (allow_other_uploads || io->is_preferred_tracker());
+        io->set_enabled(TR_UP, enable_upload);
         io->set_enabled(TR_DOWN, io->has_bandwidth_left(TR_DOWN));
+    }
+
+    if (preferred_peer_count > 0U || hold_before > 0U || preferred_upload_hold_pulses_ > 0U)
+    {
+        tr_logAddTrace(fmt::format(
+            FMT_STRING(
+                "preferred upload gate: preferred_peers={}, other_peers={}, preferred_pending_requests={}, preferred_pending_piece_data={}, preferred_upload_bytes={}, other_upload_bytes={}, preferred_demand={}, hold_before={}, hold_after={}, allow_other_uploads={}"),
+            preferred_peer_count,
+            other_peer_count,
+            preferred_pending_request_count,
+            preferred_pending_piece_data_count,
+            preferred_upload_bytes,
+            other_upload_bytes,
+            has_preferred_upload_demand,
+            hold_before,
+            preferred_upload_hold_pulses_,
+            allow_other_uploads));
     }
 }
 

@@ -107,4 +107,3 @@ Last but certainly not least, a big ***Thank You*** to these people who contribu
   * Improved parsing HTTP tracker announce response. ([#6567](https://github.com/transmission/transmission/pull/6567))
 * @wjt ([Will Thompson](https://github.com/wjt)):
   * Updated flatpak release metainfo. ([#6357](https://github.com/transmission/transmission/pull/6357))
-

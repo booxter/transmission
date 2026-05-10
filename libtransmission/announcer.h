@@ -51,6 +51,7 @@ struct tr_tracker_event
 
     // for Peers events
     std::vector<tr_pex> pex;
+    bool is_preferred = false;
 
     // for Peers and Counts events
     int leechers;
