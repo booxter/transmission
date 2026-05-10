@@ -7,6 +7,7 @@ Users can set environmental variables to override Transmission's default behavio
  * If `TR_CURL_VERBOSE` is set, debugging information for libcurl will be enabled.  More information about libcurl's debugging mode [is available here](https://curl.haxx.se/libcurl/c/curl_easy_setopt.html#CURLOPTVERBOSE).
  * If `TR_DHT_VERBOSE` is set, Transmission will log all of the DHT's activities in excruciating detail to standard error.
  * If `TR_SAVE_VERSION_FORMAT` is set to `4` or `5`, it will save settings.json, stats.json, etc. files to either Transmission 4 or Transmission 5 format.
+ * If `TR_TRACKER_PRIORITY_FILE` is set, Transmission will load preferred tracker hosts from that file and prioritize those trackers ahead of other already-due announces. The file accepts one tracker host or announce URL per line; empty lines and text after `#` are ignored. This only changes queue ordering after an announce is due; it does not change tracker-provided `interval` or `min interval` values.
 
 ## Standard Variables Used by Transmission
  * If `TRANSMISSION_WEB_HOME` is _not_ set, non-Mac platforms will look for the [Web Interface](Web-Interface.md) files in `XDG_DATA_HOME` and in `XDG_DATA_DIRS` as described in [the XDG Base Directory Specification](https://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html#variables). `XDG_DATA_HOME` has a default value of `$HOME/.local/share/`.

@@ -30,6 +30,8 @@
 #include "libtransmission/announcer-common.h"
 #include "libtransmission/announcer.h"
 #include "libtransmission/crypto-utils.h" /* tr_rand_int() */
+#include "libtransmission/env.h"
+#include "libtransmission/file-utils.h"
 #include "libtransmission/interned-string.h" // tr_interned_string
 #include "libtransmission/log.h"
 #include "libtransmission/session.h"
@@ -52,6 +54,7 @@ namespace
 {
 /* unless the tracker says otherwise, rescrape this frequently */
 auto constexpr DefaultScrapeIntervalSec = time_t{ 60 * 30 };
+auto constexpr PreferredTrackerFileEnv = "TR_TRACKER_PRIORITY_FILE"sv;
 
 /* the value of the 'numwant' argument passed in tracker requests. */
 auto constexpr Numwant = 80;
@@ -208,7 +211,26 @@ public:
 
     tr_session* const session;
 
+    [[nodiscard]] bool isPreferredTrackerHost(std::string_view host) const
+    {
+        return preferred_tracker_hosts_.contains(host);
+    }
+
 private:
+    [[nodiscard]] static tr_preferred_tracker_hosts loadPreferredTrackerHosts()
+    {
+        auto const filename = tr_env_get_string(PreferredTrackerFileEnv);
+        if (std::empty(filename))
+        {
+            return {};
+        }
+
+        auto contents = std::vector<char>{};
+        return tr_file_read(filename, contents) ?
+            tr_announcerParsePreferredTrackerHosts({ std::data(contents), std::size(contents) }) :
+            tr_preferred_tracker_hosts{};
+    }
+
     void flushCloseMessages()
     {
         for (auto& stop : stops_)
@@ -220,6 +242,8 @@ private:
     }
 
     static auto constexpr UpkeepInterval = 500ms;
+
+    tr_preferred_tracker_hosts const preferred_tracker_hosts_ = loadPreferredTrackerHosts();
 
     tr_announcer_udp& announcer_udp_;
 
@@ -238,6 +262,95 @@ std::unique_ptr<tr_announcer> tr_announcer::create(tr_session* session, tr_annou
     return std::make_unique<tr_announcer_impl>(session, announcer_udp);
 }
 
+std::optional<std::string> tr_announcerGetPreferredTrackerHost(std::string_view entry)
+{
+    if (auto const comment_pos = entry.find('#'); comment_pos != std::string_view::npos)
+    {
+        entry = entry.substr(0, comment_pos);
+    }
+
+    entry = tr_strv_strip(entry);
+    if (std::empty(entry))
+    {
+        return std::nullopt;
+    }
+
+    if (tr_strv_contains(entry, "://"))
+    {
+        if (auto const parsed = tr_urlParseTracker(entry); parsed)
+        {
+            return tr_strlower(parsed->host_wo_brackets);
+        }
+
+        return std::nullopt;
+    }
+
+    auto const url = fmt::format("http://{}/", entry);
+    if (auto const parsed = tr_urlParse(url); parsed)
+    {
+        return tr_strlower(parsed->host_wo_brackets);
+    }
+
+    return std::nullopt;
+}
+
+tr_preferred_tracker_hosts tr_announcerParsePreferredTrackerHosts(std::string_view text)
+{
+    auto hosts = tr_preferred_tracker_hosts{};
+
+    auto line = std::string_view{};
+    while (tr_strv_sep(&text, &line, '\n'))
+    {
+        if (auto host = tr_announcerGetPreferredTrackerHost(line); host)
+        {
+            hosts.emplace(std::move(*host));
+        }
+    }
+
+    return hosts;
+}
+
+int tr_compare_announce_upkeep_priority(tr_announce_upkeep_priority const& a, tr_announce_upkeep_priority const& b) noexcept
+{
+    /* prefer higher-priority events */
+    if (auto const val = tr_compare_3way(a.announce_event_priority, b.announce_event_priority); val != 0)
+    {
+        return -val;
+    }
+
+    /* then prefer user-selected trackers once the announce is already due */
+    if (auto const val = tr_compare_3way(static_cast<int>(a.is_preferred), static_cast<int>(b.is_preferred)); val != 0)
+    {
+        return -val;
+    }
+
+    /* prefer swarms where we might upload */
+    if (auto const val = tr_compare_3way(a.downloader_count, b.downloader_count); val != 0)
+    {
+        return -val;
+    }
+
+    /* prefer swarms where we might download */
+    if (auto const val = tr_compare_3way(a.is_done, b.is_done); val != 0)
+    {
+        return val;
+    }
+
+    /* prefer larger stats, to help ensure stats get recorded when stopping on shutdown */
+    if (auto const val = tr_compare_3way(a.byte_count, b.byte_count); val != 0)
+    {
+        return -val;
+    }
+
+    // announcements that have been waiting longer go first
+    if (auto const val = tr_compare_3way(a.announce_at, b.announce_at); val != 0)
+    {
+        return val;
+    }
+
+    return tr_compare_3way(a.tie_breaker, b.tie_breaker);
+}
+
 // ---
 
 /* a row in tr_tier's list of trackers */
@@ -247,6 +360,7 @@ struct tr_tracker
         : announce_url{ info.announce }
         , announce_parsed{ info.announce_parsed }
         , scrape_info{ std::empty(info.scrape) ? nullptr : announcer->scrape_info(info.scrape) }
+        , is_preferred{ announcer->isPreferredTrackerHost(tr_strlower(info.announce_parsed.host_wo_brackets)) }
         , id{ info.id }
     {
     }
@@ -341,6 +455,7 @@ struct tr_tracker
     tr_interned_string const announce_url;
     tr_url_parsed_t const announce_parsed;
     tr_scrape_info* const scrape_info;
+    bool const is_preferred;
 
     std::string tracker_id;
 
@@ -411,6 +526,12 @@ struct tr_tier
         auto const* const tracker = currentTracker();
 
         return tracker == nullptr ? 0 : tracker->downloader_count().value_or(-1) + tracker->leecher_count().value_or(-1);
+    }
+
+    [[nodiscard]] bool isPreferredTracker() const
+    {
+        auto const* const tracker = currentTracker();
+        return tracker != nullptr && tracker->is_preferred;
     }
 
     tr_tracker* useNextTracker()
@@ -1479,42 +1600,25 @@ namespace upkeep_helpers
 {
 int compareAnnounceTiers(tr_tier const* a, tr_tier const* b)
 {
-    /* prefer higher-priority events */
-    if (auto const val = tr_compare_3way(a->announce_event_priority, b->announce_event_priority); val != 0)
-    {
-        return -val;
-    }
-
-    /* prefer swarms where we might upload */
-    if (auto const val = tr_compare_3way(a->countDownloaders(), b->countDownloaders()); val != 0)
-    {
-        return -val;
-    }
-
-    /* prefer swarms where we might download */
-    if (auto const val = tr_compare_3way(a->tor->is_done(), b->tor->is_done()); val != 0)
-    {
-        return val;
-    }
-
-    /* prefer larger stats, to help ensure stats get recorded when stopping on shutdown */
-    if (auto const val = tr_compare_3way(
-            a->byteCounts[TR_ANN_UP] + a->byteCounts[TR_ANN_DOWN],
-            b->byteCounts[TR_ANN_UP] + b->byteCounts[TR_ANN_DOWN]);
-        val != 0)
-    {
-        return -val;
-    }
-
-    // announcements that have been waiting longer go first
-    if (auto const val = tr_compare_3way(a->announceAt, b->announceAt); val != 0)
-    {
-        return val;
-    }
-
-    // the tiers are effectively equal priority, but add an arbitrary
-    // differentiation because ptrArray sorted mode hates equal items.
-    return tr_compare_3way(a, b);
+    return tr_compare_announce_upkeep_priority(
+        {
+            .announce_event_priority = a->announce_event_priority,
+            .is_preferred = a->isPreferredTracker(),
+            .downloader_count = a->countDownloaders(),
+            .is_done = a->tor->is_done(),
+            .byte_count = a->byteCounts[TR_ANN_UP] + a->byteCounts[TR_ANN_DOWN],
+            .announce_at = a->announceAt,
+            .tie_breaker = a->id,
+        },
+        {
+            .announce_event_priority = b->announce_event_priority,
+            .is_preferred = b->isPreferredTracker(),
+            .downloader_count = b->countDownloaders(),
+            .is_done = b->tor->is_done(),
+            .byte_count = b->byteCounts[TR_ANN_UP] + b->byteCounts[TR_ANN_DOWN],
+            .announce_at = b->announceAt,
+            .tie_breaker = b->id,
+        });
 }
 
 void tierAnnounce(tr_announcer_impl* announcer, tr_tier* tier)

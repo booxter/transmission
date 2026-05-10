@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstddef> // std::byte
 #include <optional>
+#include <set>
 #include <string_view>
 
 #define LIBTRANSMISSION_ANNOUNCER_MODULE
@@ -22,6 +23,77 @@ using AnnouncerTest = ::tr::test::TransmissionTest;
 using namespace std::literals;
 
 static char const* const LogName = "LogName";
+
+TEST_F(AnnouncerTest, preferredTrackerHostParsing)
+{
+    auto host = tr_announcerGetPreferredTrackerHost("MAM.example"sv);
+    ASSERT_TRUE(host.has_value());
+    EXPECT_EQ("mam.example"sv, *host);
+
+    host = tr_announcerGetPreferredTrackerHost("https://Tracker.Example:443/announce/passkey"sv);
+    ASSERT_TRUE(host.has_value());
+    EXPECT_EQ("tracker.example"sv, *host);
+
+    host = tr_announcerGetPreferredTrackerHost("udp://[2001:db8::1]:443/announce"sv);
+    ASSERT_TRUE(host.has_value());
+    EXPECT_EQ("2001:db8::1"sv, *host);
+
+    EXPECT_FALSE(tr_announcerGetPreferredTrackerHost("ftp://tracker.example/announce"sv).has_value());
+    EXPECT_FALSE(tr_announcerGetPreferredTrackerHost(" # comment only"sv).has_value());
+}
+
+TEST_F(AnnouncerTest, preferredTrackerHostListParsing)
+{
+    auto constexpr Text = R"(
+# a full-line comment
+mam.example
+https://Tracker.Example:443/announce/passkey
+mam.example # duplicate
+udp://[2001:db8::1]:443/announce
+ftp://ignored.example/announce
+)";
+
+    auto const hosts = tr_announcerParsePreferredTrackerHosts(Text);
+
+    EXPECT_EQ(3U, std::size(hosts));
+    EXPECT_TRUE(hosts.contains("mam.example"));
+    EXPECT_TRUE(hosts.contains("tracker.example"));
+    EXPECT_TRUE(hosts.contains("2001:db8::1"));
+}
+
+TEST_F(AnnouncerTest, compareAnnounceUpkeepPriorityPrefersConfiguredTrackers)
+{
+    auto preferred = tr_announce_upkeep_priority{};
+    preferred.is_preferred = true;
+    preferred.downloader_count = 0;
+    preferred.is_done = true;
+    preferred.tie_breaker = 1U;
+
+    auto busy_non_preferred = tr_announce_upkeep_priority{};
+    busy_non_preferred.downloader_count = 100;
+    busy_non_preferred.is_done = true;
+    busy_non_preferred.tie_breaker = 2U;
+
+    EXPECT_LT(tr_compare_announce_upkeep_priority(preferred, busy_non_preferred), 0);
+    EXPECT_GT(tr_compare_announce_upkeep_priority(busy_non_preferred, preferred), 0);
+}
+
+TEST_F(AnnouncerTest, compareAnnounceUpkeepPriorityKeepsEventPriorityAheadOfPreference)
+{
+    auto preferred_none = tr_announce_upkeep_priority{};
+    preferred_none.is_preferred = true;
+    preferred_none.announce_event_priority = 0;
+    preferred_none.is_done = true;
+    preferred_none.tie_breaker = 1U;
+
+    auto started_non_preferred = tr_announce_upkeep_priority{};
+    started_non_preferred.announce_event_priority = 1;
+    started_non_preferred.is_done = true;
+    started_non_preferred.tie_breaker = 2U;
+
+    EXPECT_LT(tr_compare_announce_upkeep_priority(started_non_preferred, preferred_none), 0);
+    EXPECT_GT(tr_compare_announce_upkeep_priority(preferred_none, started_non_preferred), 0);
+}
 
 TEST_F(AnnouncerTest, parseHttpAnnounceResponseNoPeers)
 {
