@@ -1181,7 +1181,7 @@ char const* torrentSet(tr_session* session, tr_variant* args_in, tr_variant* /*a
         {
             auto const priority = tr_priority_t(tmp);
 
-            if (tr_isPriority(priority))
+            if (tr_isTorrentPriority(priority))
             {
                 tr_torrentSetPriority(tor, priority);
             }

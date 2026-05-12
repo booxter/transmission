@@ -134,6 +134,11 @@ public:
      */
     [[nodiscard]] size_t clamp(tr_direction dir, size_t byte_count) const noexcept;
 
+    /**
+     * @brief clamps async unforced upload piece bytes to the per-pulse spillover budget
+     */
+    [[nodiscard]] size_t clampAsyncUploadPieceBytes(size_t byte_count, tr_priority_t peer_priority) const noexcept;
+
     /** @brief Get the raw total of bytes read or sent by this bandwidth subtree. */
     [[nodiscard]] auto getRawSpeedBytesPerSecond(uint64_t const now, tr_direction const dir) const
     {
@@ -248,6 +253,16 @@ private:
         bool honor_parent_limits_ = true;
     };
 
+    struct PhaseStats
+    {
+        size_t peer_count = 0U;
+        size_t peers_processed = 0U;
+        size_t peers_made_progress = 0U;
+        size_t peers_stalled = 0U;
+        size_t bytes_used = 0U;
+        std::array<size_t, 4> bytes_used_by_priority = {};
+    };
+
     static tr_bytes_per_second_t getSpeedBytesPerSecond(RateControl& r, unsigned int interval_msec, uint64_t now);
 
     [[nodiscard]] constexpr auto* parent() noexcept
@@ -258,8 +273,15 @@ private:
     void deparent() noexcept;
 
     static void notifyBandwidthConsumedBytes(uint64_t now, RateControl* r, size_t size);
+    void notifyBandwidthConsumed(
+        tr_direction dir,
+        size_t byte_count,
+        bool is_piece_data,
+        uint64_t now,
+        tr_priority_t peer_priority);
 
-    static void phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
+    [[nodiscard]] static PhaseStats phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
+    [[nodiscard]] static PhaseStats phaseOneForce(std::vector<tr_peerIo*>& peers, tr_direction dir);
 
     void allocateBandwidth(
         tr_priority_t parent_priority,
@@ -270,7 +292,11 @@ private:
     std::vector<tr_bandwidth*> children_;
     tr_bandwidth* parent_ = nullptr;
     std::weak_ptr<tr_peerIo> peer_;
-    tr_priority_t priority_ = 0;
+    tr_priority_t priority_ = TR_PRI_NORMAL;
+    std::array<size_t, 4> async_up_piece_bytes_by_priority_ = {};
+    bool track_async_up_piece_bytes_ = false;
+    size_t unforced_async_up_piece_bytes_left_ = 0U;
+    bool enforce_unforced_async_up_budget_ = false;
 };
 
 /* @} */

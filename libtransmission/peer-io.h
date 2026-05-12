@@ -145,6 +145,27 @@ public:
         return bandwidth_.getPieceSpeedBytesPerSecond(now, dir);
     }
 
+    // Returns {piece_bytes, protocol_bytes} currently queued for outbound writes.
+    [[nodiscard]] auto get_queued_outbound_byte_counts() const noexcept -> std::pair<size_t, size_t>
+    {
+        auto piece = size_t{};
+        auto protocol = size_t{};
+
+        for (auto const& [n_bytes, is_piece_data] : outbuf_info_)
+        {
+            if (is_piece_data)
+            {
+                piece += n_bytes;
+            }
+            else
+            {
+                protocol += n_bytes;
+            }
+        }
+
+        return { piece, protocol };
+    }
+
     ///
 
     [[nodiscard]] constexpr auto supports_fext() const noexcept
@@ -313,6 +334,7 @@ private:
 
     void can_read_wrapper();
     void did_write_wrapper(size_t bytes_transferred);
+    [[nodiscard]] size_t get_async_upload_write_limit(size_t max) const noexcept;
 
     size_t try_read(size_t max);
     size_t try_write(size_t max);

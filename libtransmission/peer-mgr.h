@@ -197,6 +197,8 @@ void tr_peerMgrStartTorrent(tr_torrent* tor);
 
 void tr_peerMgrStopTorrent(tr_torrent* tor);
 
+void tr_peerMgrRechokeSoon(tr_torrent* tor);
+
 void tr_peerMgrAddTorrent(tr_peerMgr* manager, struct tr_torrent* tor);
 
 void tr_peerMgrRemoveTorrent(tr_torrent* tor);

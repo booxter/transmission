@@ -1379,6 +1379,16 @@ void tr_peerMgrStopTorrent(tr_torrent* tor)
     tor->swarm->stop();
 }
 
+void tr_peerMgrRechokeSoon(tr_torrent* tor)
+{
+    TR_ASSERT(tr_isTorrent(tor));
+
+    if (tor->swarm != nullptr)
+    {
+        tor->swarm->manager->rechokeSoon();
+    }
+}
+
 void tr_peerMgrAddTorrent(tr_peerMgr* manager, tr_torrent* tor)
 {
     TR_ASSERT(tr_isTorrent(tor));
@@ -1820,10 +1830,16 @@ void rechokeUploads(tr_swarm* s, uint64_t const now)
     auto const* const session = s->manager->session;
     bool const choke_all = !s->tor->clientCanUpload();
     bool const is_maxed_out = s->tor->bandwidth_.is_maxed_out(TR_UP, now);
+    bool const is_force_torrent = s->tor->getPriority() == TR_PRI_FORCE;
 
     /* an optimistic unchoke peer's "optimistic"
      * state lasts for N calls to rechokeUploads(). */
-    if (s->optimistic_unchoke_time_scaler > 0)
+    if (is_force_torrent)
+    {
+        s->optimistic = nullptr;
+        s->optimistic_unchoke_time_scaler = 0;
+    }
+    else if (s->optimistic_unchoke_time_scaler > 0)
     {
         --s->optimistic_unchoke_time_scaler;
     }
@@ -1856,6 +1872,23 @@ void rechokeUploads(tr_swarm* s, uint64_t const now)
                 peer->is_peer_choked(),
                 true);
         }
+    }
+
+    if (is_force_torrent)
+    {
+        // FORCE torrents bypass tit-for-tat slotting here so upload demand can
+        // form quickly; the bandwidth layer still arbitrates actual bytes sent.
+        for (auto& item : choked)
+        {
+            item.is_choked = !item.is_interested;
+        }
+
+        for (auto& item : choked)
+        {
+            item.msgs->set_choke(item.is_choked);
+        }
+
+        return;
     }
 
     std::sort(std::begin(choked), std::end(choked));
@@ -2335,16 +2368,21 @@ struct peer_candidate
     /* prefer peers belonging to a torrent of a higher priority */
     switch (tor->getPriority())
     {
-    case TR_PRI_HIGH:
+    case TR_PRI_FORCE:
         i = 0;
         break;
 
-    case TR_PRI_NORMAL:
+    case TR_PRI_HIGH:
         i = 1;
         break;
 
-    case TR_PRI_LOW:
+    case TR_PRI_NORMAL:
         i = 2;
+        break;
+
+    case TR_PRI_LOW:
+    default:
+        i = 3;
         break;
     }
 

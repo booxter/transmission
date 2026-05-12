@@ -280,6 +280,7 @@ size_t tr_peerIo::try_write(size_t max)
     auto& buf = outbuf_;
     max = std::min(max, std::size(buf));
     max = bandwidth().clamp(Dir, max);
+    max = get_async_upload_write_limit(max);
     if (max == 0)
     {
         set_enabled(Dir, false);
@@ -309,6 +310,44 @@ size_t tr_peerIo::try_write(size_t max)
     }
 
     return n_written;
+}
+
+size_t tr_peerIo::get_async_upload_write_limit(size_t max) const noexcept
+{
+    auto const piece_budget = bandwidth().clampAsyncUploadPieceBytes(SIZE_MAX, priority());
+    if (piece_budget == SIZE_MAX)
+    {
+        return max;
+    }
+
+    auto allowed_piece_bytes = piece_budget;
+    auto allowed_total = size_t{};
+
+    for (auto const& [n_bytes, is_piece_data] : outbuf_info_)
+    {
+        if (allowed_total >= max)
+        {
+            break;
+        }
+
+        auto const chunk_size = std::min(n_bytes, max - allowed_total);
+        if (!is_piece_data)
+        {
+            allowed_total += chunk_size;
+            continue;
+        }
+
+        auto const allowed_chunk = std::min(chunk_size, allowed_piece_bytes);
+        allowed_total += allowed_chunk;
+        allowed_piece_bytes -= allowed_chunk;
+
+        if (allowed_chunk != chunk_size)
+        {
+            break;
+        }
+    }
+
+    return allowed_total;
 }
 
 void tr_peerIo::event_write_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)

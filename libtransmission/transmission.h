@@ -1039,13 +1039,16 @@ bool tr_torrentGetSeedIdle(tr_torrent const* tor, uint16_t* minutes);
 uint16_t tr_torrentGetPeerLimit(tr_torrent const* tor);
 void tr_torrentSetPeerLimit(tr_torrent* tor, uint16_t max_connected_peers);
 
-// --- File Priorities
-
+// File priorities and torrent bandwidth priorities currently share these
+// constants for source compatibility. `TR_PRI_FORCE` is only valid for torrent
+// bandwidth priority and should probably be split into a distinct
+// torrent-specific enum in a future API revision.
 enum
 {
     TR_PRI_LOW = -1,
     TR_PRI_NORMAL = 0, /* since Normal is 0, memset initializes nicely */
-    TR_PRI_HIGH = 1
+    TR_PRI_HIGH = 1,
+    TR_PRI_FORCE = TR_PRI_HIGH + 1
 };
 
 /**

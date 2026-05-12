@@ -241,6 +241,7 @@ class tr_peerMsgsImpl;
 ReadState canRead(tr_peerIo* io, void* vmsgs, size_t* piece);
 void cancelAllRequestsToClient(tr_peerMsgsImpl* msgs);
 void didWrite(tr_peerIo* io, size_t bytes_written, bool was_piece_data, void* vmsgs);
+size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now);
 void gotError(tr_peerIo* io, tr_error const& err, void* vmsgs);
 void peerPulse(void* vmsgs);
 void protocolSendCancel(tr_peerMsgsImpl* msgs, struct peer_request const& req);
@@ -1327,6 +1328,10 @@ void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
     {
         msgs->peer_requested_.emplace_back(*req);
         prefetchPieces(msgs);
+
+        // Queue piece data immediately so late-arriving upload demand can still
+        // participate in the current bandwidth pulse.
+        fillOutputBuffer(msgs, tr_time());
     }
     else if (msgs->io->supports_fext())
     {
@@ -1482,6 +1487,10 @@ ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmissi
         logtrace(msgs, "got Interested");
         msgs->peer_is_interested_ = true;
         msgs->update_active(TR_CLIENT_TO_PEER);
+        if (msgs->torrent->getPriority() == TR_PRI_FORCE)
+        {
+            tr_peerMgrRechokeSoon(msgs->torrent);
+        }
         break;
 
     case BtPeerMsgs::NotInterested:
