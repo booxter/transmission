@@ -110,7 +110,12 @@ public:
      * @brief Notify the bandwidth object that some of its allocated bandwidth has been consumed.
      * This is is usually invoked by the peer-io after a read or write.
      */
-    void notifyBandwidthConsumed(tr_direction dir, size_t byte_count, bool is_piece_data, uint64_t now);
+    void notifyBandwidthConsumed(
+        tr_direction dir,
+        size_t byte_count,
+        bool is_piece_data,
+        uint64_t now,
+        tr_torrent_priority_t priority = TR_TOR_PRI_NORMAL);
 
     /**
      * @brief allocate the next `period_msec`'s worth of bandwidth for the peer-ios to consume
@@ -132,7 +137,10 @@ public:
     /**
      * @brief clamps `byte_count` down to a number that this bandwidth will allow to be consumed
      */
-    [[nodiscard]] size_t clamp(tr_direction dir, size_t byte_count) const noexcept;
+    [[nodiscard]] size_t clamp(
+        tr_direction dir,
+        size_t byte_count,
+        tr_torrent_priority_t priority = TR_TOR_PRI_NORMAL) const noexcept;
 
     /** @brief Get the raw total of bytes read or sent by this bandwidth subtree. */
     [[nodiscard]] auto getRawSpeedBytesPerSecond(uint64_t const now, tr_direction const dir) const
@@ -229,8 +237,9 @@ public:
     void setLimits(tr_bandwidth_limits const* limits);
 
 private:
-    static constexpr uint8_t ForceUploadHoldPulses = 1U;
-    static constexpr uint8_t ForceDownloadHoldPulses = 1U;
+    static constexpr size_t ForceRecentPulses = 6U;
+    static constexpr size_t ForceRampStepDivisor = 8U;
+    static constexpr size_t ForceProbeHoldPulses = 2U;
 
     struct RateControl
     {
@@ -246,8 +255,21 @@ private:
         RateControl raw_;
         RateControl piece_;
         size_t bytes_left_;
+        size_t non_force_bytes_left_ = 0U;
+        size_t pulse_budget_ = 0U;
+        size_t reserved_force_bytes_ = 0U;
+        size_t force_reservation_floor_ = 0U;
+        size_t force_probe_bytes_ = 0U;
+        size_t force_probe_hold_pulses_ = 0U;
+        size_t force_phase_one_bytes_ = 0U;
+        size_t force_piece_bytes_used_ = 0U;
+        size_t non_force_piece_bytes_used_ = 0U;
+        size_t force_peer_count_ = 0U;
+        size_t other_peer_count_ = 0U;
         tr_bytes_per_second_t desired_speed_bps_;
         bool is_limited_ = false;
+        bool is_non_force_limited_ = false;
+        bool force_has_more_demand_ = false;
         bool honor_parent_limits_ = true;
     };
 
@@ -274,8 +296,7 @@ private:
     tr_bandwidth* parent_ = nullptr;
     std::weak_ptr<tr_peerIo> peer_;
     tr_torrent_priority_t priority_ = TR_TOR_PRI_NORMAL;
-    uint8_t force_upload_hold_pulses_ = 0;
-    uint8_t force_download_hold_pulses_ = 0;
+    std::array<std::array<size_t, ForceRecentPulses>, 2> recent_force_bytes_ = {};
 };
 
 /* @} */

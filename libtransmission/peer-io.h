@@ -137,7 +137,7 @@ public:
 
     [[nodiscard]] auto has_bandwidth_left(tr_direction dir) const noexcept
     {
-        return bandwidth_.clamp(dir, 1024) > 0;
+        return bandwidth_.clamp(dir, 1024, priority_) > 0;
     }
 
     [[nodiscard]] auto get_piece_speed_bytes_per_second(uint64_t now, tr_direction dir) const noexcept

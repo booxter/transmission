@@ -247,11 +247,11 @@ void tr_peerIo::did_write_wrapper(size_t bytes_transferred)
         size_t const overhead = socket_.guess_packet_overhead(payload);
         uint64_t const now = tr_time_msec();
 
-        bandwidth().notifyBandwidthConsumed(TR_UP, payload, is_piece_data, now);
+        bandwidth().notifyBandwidthConsumed(TR_UP, payload, is_piece_data, now, priority_);
 
         if (overhead > 0)
         {
-            bandwidth().notifyBandwidthConsumed(TR_UP, overhead, false, now);
+            bandwidth().notifyBandwidthConsumed(TR_UP, overhead, false, now, priority_);
         }
 
         if (did_write_ != nullptr)
@@ -279,7 +279,7 @@ size_t tr_peerIo::try_write(size_t max)
 
     auto& buf = outbuf_;
     max = std::min(max, std::size(buf));
-    max = bandwidth().clamp(Dir, max);
+    max = bandwidth().clamp(Dir, max, priority_);
     if (max == 0)
     {
         set_enabled(Dir, false);
@@ -350,7 +350,9 @@ void tr_peerIo::can_read_wrapper()
     // The read buffer will grow indefinitely if libutp or the TCP stack keeps buffering
     // data faster than the bandwidth limit allows. To safeguard against that, we keep
     // processing if the read buffer is more than twice as large as the target size.
-    while (!done && !err && (read_buffer_size() > RcvBuf * 2U || bandwidth().clamp(TR_DOWN, read_buffer_size()) != 0U))
+    while (
+        !done && !err &&
+        (read_buffer_size() > RcvBuf * 2U || bandwidth().clamp(TR_DOWN, read_buffer_size(), priority_) != 0U))
     {
         size_t piece = 0;
         auto const old_len = read_buffer_size();
@@ -360,17 +362,17 @@ void tr_peerIo::can_read_wrapper()
 
         if (piece != 0)
         {
-            bandwidth().notifyBandwidthConsumed(TR_DOWN, piece, true, now);
+            bandwidth().notifyBandwidthConsumed(TR_DOWN, piece, true, now, priority_);
         }
 
         if (used != piece)
         {
-            bandwidth().notifyBandwidthConsumed(TR_DOWN, used - piece, false, now);
+            bandwidth().notifyBandwidthConsumed(TR_DOWN, used - piece, false, now, priority_);
         }
 
         if (overhead > 0)
         {
-            bandwidth().notifyBandwidthConsumed(TR_DOWN, overhead, false, now);
+            bandwidth().notifyBandwidthConsumed(TR_DOWN, overhead, false, now, priority_);
         }
 
         switch (read_state)
@@ -406,7 +408,7 @@ size_t tr_peerIo::try_read(size_t max)
 
     // Do not write more than the bandwidth allows.
     // If there is no bandwidth left available, disable writes.
-    max = bandwidth().clamp(Dir, max);
+    max = bandwidth().clamp(Dir, max, priority_);
     if (max == 0)
     {
         set_enabled(Dir, false);
@@ -765,7 +767,12 @@ void tr_peerIo::utp_init([[maybe_unused]] struct_utp_context* ctx)
             if (auto* const io = static_cast<tr_peerIo*>(utp_get_userdata(args->socket)); io != nullptr)
             {
                 tr_logAddTraceIo(io, fmt::format("{:d} overhead bytes via utp", args->len));
-                io->bandwidth().notifyBandwidthConsumed(args->send != 0 ? TR_UP : TR_DOWN, args->len, false, tr_time_msec());
+                io->bandwidth().notifyBandwidthConsumed(
+                    args->send != 0 ? TR_UP : TR_DOWN,
+                    args->len,
+                    false,
+                    tr_time_msec(),
+                    io->priority_);
             }
             return {};
         });

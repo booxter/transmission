@@ -36,7 +36,6 @@ protected:
 
     static auto constexpr DefaultPeerPort = tr_port::fromHost(51413);
     static auto constexpr BytesPerPulse = size_t{ 3000 };
-    static auto constexpr ForceHoldPulses = size_t{ 1 };
     static constexpr unsigned int PeriodMsec = 500U;
 
     tr_address const DefaultPeerAddr = *tr_address::from_string("127.0.0.1"sv);
@@ -83,7 +82,8 @@ protected:
         return READ_NOW;
     }
 
-    static void sendBytes(evutil_socket_t sock, std::array<char, BytesPerPulse> const& payload)
+    template<size_t N>
+    static void sendBytes(evutil_socket_t sock, std::array<char, N> const& payload)
     {
         auto const* walk = std::data(payload);
         auto len = std::size(payload);
@@ -102,7 +102,7 @@ protected:
     }
 };
 
-TEST_F(BandwidthTest, forceUploadPeerBlocksOthersUntilHoldExpires)
+TEST_F(BandwidthTest, forceUploadPeerReservesRecentSliceAndLeavesRemainder)
 {
     setSinglePulseLimit(TR_UP);
 
@@ -115,28 +115,86 @@ TEST_F(BandwidthTest, forceUploadPeerBlocksOthersUntilHoldExpires)
     normal_io->set_callbacks(nullptr, didWriteCounter, nullptr, &normal_stats);
 
     force_io->bandwidth().setPriority(TR_TOR_PRI_FORCE);
-    force_io->write_bytes(std::array<char, BytesPerPulse>{}.data(), BytesPerPulse, true);
-    normal_io->write_bytes(std::array<char, BytesPerPulse>{}.data(), BytesPerPulse, true);
+
+    auto full_payload = std::array<char, BytesPerPulse>{};
+    auto reserved_payload = std::array<char, BytesPerPulse / 3U>{};
+
+    force_io->write_bytes(reserved_payload.data(), std::size(reserved_payload), true);
+    normal_io->write_bytes(full_payload.data(), std::size(full_payload), true);
 
     session_->top_bandwidth_.allocate(PeriodMsec);
-    EXPECT_EQ(BytesPerPulse, force_stats.piece_bytes);
-    EXPECT_EQ(0U, normal_stats.piece_bytes);
+    EXPECT_EQ(std::size(reserved_payload), force_stats.piece_bytes);
+    EXPECT_EQ(BytesPerPulse - force_stats.piece_bytes, normal_stats.piece_bytes);
 
-    for (size_t i = 0; i + 1U < ForceHoldPulses; ++i)
-    {
-        session_->top_bandwidth_.allocate(PeriodMsec);
-    }
+    force_stats = {};
+    normal_stats = {};
 
-    EXPECT_EQ(0U, normal_stats.piece_bytes);
+    normal_io->write_bytes(full_payload.data(), std::size(full_payload), true);
 
     session_->top_bandwidth_.allocate(PeriodMsec);
-    EXPECT_EQ(BytesPerPulse, normal_stats.piece_bytes);
+    EXPECT_EQ(0U, force_stats.piece_bytes);
+    EXPECT_EQ(BytesPerPulse - std::size(reserved_payload), normal_stats.piece_bytes);
 
     evutil_closesocket(force_sock);
     evutil_closesocket(normal_sock);
 }
 
-TEST_F(BandwidthTest, forceDownloadPeerBlocksOthersUntilHoldExpires)
+TEST_F(BandwidthTest, persistentForceUploadDemandRampsReservedSlice)
+{
+    setSinglePulseLimit(TR_UP);
+
+    auto [force_io, force_sock] = createIncomingIo();
+    auto [normal_io, normal_sock] = createIncomingIo();
+
+    auto force_stats = TransferStats{};
+    auto normal_stats = TransferStats{};
+    force_io->set_callbacks(nullptr, didWriteCounter, nullptr, &force_stats);
+    normal_io->set_callbacks(nullptr, didWriteCounter, nullptr, &normal_stats);
+
+    force_io->bandwidth().setPriority(TR_TOR_PRI_FORCE);
+    force_io->set_has_pending_piece_requests(true);
+
+    auto full_payload = std::array<char, BytesPerPulse>{};
+    auto force_payload = std::array<char, BytesPerPulse / 3U>{};
+
+    force_io->write_bytes(force_payload.data(), std::size(force_payload), true);
+    normal_io->write_bytes(full_payload.data(), std::size(full_payload), true);
+
+    session_->top_bandwidth_.allocate(PeriodMsec);
+    ASSERT_EQ(std::size(force_payload), force_stats.piece_bytes);
+    ASSERT_EQ(BytesPerPulse - force_stats.piece_bytes, normal_stats.piece_bytes);
+
+    force_stats = {};
+    normal_stats = {};
+
+    force_io->write_bytes(force_payload.data(), std::size(force_payload), true);
+    normal_io->write_bytes(full_payload.data(), std::size(full_payload), true);
+
+    session_->top_bandwidth_.allocate(PeriodMsec);
+
+    auto const expected_reserved = std::size(force_payload) + BytesPerPulse / 8U;
+    auto const expected_reserved_after_observed_activity =
+        std::size(force_payload) + BytesPerPulse / 8U + std::max(size_t{ 1U }, (BytesPerPulse / 8U) / 2U);
+    EXPECT_EQ(std::size(force_payload), force_stats.piece_bytes);
+    EXPECT_EQ(BytesPerPulse - expected_reserved, normal_stats.piece_bytes);
+
+    force_stats = {};
+    normal_stats = {};
+    force_io->set_has_pending_piece_requests(false);
+
+    force_io->write_bytes(force_payload.data(), std::size(force_payload), true);
+    normal_io->write_bytes(full_payload.data(), std::size(full_payload), true);
+
+    session_->top_bandwidth_.allocate(PeriodMsec);
+
+    EXPECT_EQ(std::size(force_payload), force_stats.piece_bytes);
+    EXPECT_EQ(BytesPerPulse - expected_reserved_after_observed_activity, normal_stats.piece_bytes);
+
+    evutil_closesocket(force_sock);
+    evutil_closesocket(normal_sock);
+}
+
+TEST_F(BandwidthTest, forceDownloadPeerReservesRecentSliceAndLeavesRemainder)
 {
     setSinglePulseLimit(TR_DOWN);
 
@@ -151,24 +209,23 @@ TEST_F(BandwidthTest, forceDownloadPeerBlocksOthersUntilHoldExpires)
     force_io->bandwidth().setPriority(TR_TOR_PRI_FORCE);
     force_io->set_has_pending_download_requests(true);
 
-    auto payload = std::array<char, BytesPerPulse>{};
-    sendBytes(force_sock, payload);
-    sendBytes(normal_sock, payload);
+    auto full_payload = std::array<char, BytesPerPulse>{};
+    auto reserved_payload = std::array<char, BytesPerPulse / 3U>{};
+    sendBytes(force_sock, reserved_payload);
+    sendBytes(normal_sock, full_payload);
 
     session_->top_bandwidth_.allocate(PeriodMsec);
-    EXPECT_EQ(BytesPerPulse, force_stats.piece_bytes);
-    EXPECT_EQ(0U, normal_stats.piece_bytes);
+    EXPECT_EQ(std::size(reserved_payload), force_stats.piece_bytes);
+    EXPECT_EQ(BytesPerPulse - force_stats.piece_bytes, normal_stats.piece_bytes);
 
     force_io->set_has_pending_download_requests(false);
-    for (size_t i = 0; i + 1U < ForceHoldPulses; ++i)
-    {
-        session_->top_bandwidth_.allocate(PeriodMsec);
-    }
-
-    EXPECT_EQ(0U, normal_stats.piece_bytes);
+    force_stats = {};
+    normal_stats = {};
+    sendBytes(normal_sock, full_payload);
 
     session_->top_bandwidth_.allocate(PeriodMsec);
-    EXPECT_EQ(BytesPerPulse, normal_stats.piece_bytes);
+    EXPECT_EQ(0U, force_stats.piece_bytes);
+    EXPECT_EQ(BytesPerPulse - (std::size(reserved_payload) + BytesPerPulse / 8U), normal_stats.piece_bytes);
 
     evutil_closesocket(force_sock);
     evutil_closesocket(normal_sock);
