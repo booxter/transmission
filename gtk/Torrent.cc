@@ -144,7 +144,7 @@ public:
         float speed_down = {};
         float speed_up = {};
 
-        tr_priority_t priority = {};
+        tr_torrent_priority_t priority = {};
 
         bool active = {};
         bool finished = {};
@@ -630,7 +630,7 @@ bool Torrent::get_finished() const
     return impl_->get_cache().finished;
 }
 
-tr_priority_t Torrent::get_priority() const
+tr_torrent_priority_t Torrent::get_priority() const
 {
     return impl_->get_cache().priority;
 }

@@ -31,7 +31,7 @@ public:
         [[nodiscard]] virtual size_t countMissingBlocks(tr_piece_index_t piece) const = 0;
         [[nodiscard]] virtual tr_block_span_t blockSpan(tr_piece_index_t) const = 0;
         [[nodiscard]] virtual tr_piece_index_t countAllPieces() const = 0;
-        [[nodiscard]] virtual tr_priority_t priority(tr_piece_index_t) const = 0;
+        [[nodiscard]] virtual tr_file_priority_t priority(tr_piece_index_t) const = 0;
         virtual ~Mediator() = default;
     };
 

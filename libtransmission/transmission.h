@@ -54,7 +54,9 @@ struct tr_torrent;
 struct tr_torrent_metainfo;
 struct tr_variant;
 
-using tr_priority_t = int8_t;
+enum tr_file_priority_t : int8_t;
+enum tr_torrent_priority_t : int8_t;
+using tr_priority_t = tr_file_priority_t;
 
 #define TR_RPC_SESSION_ID_HEADER "X-Transmission-Session-Id"
 
@@ -570,8 +572,8 @@ void tr_sessionSetPaused(tr_session* session, bool is_paused);
 
 void tr_sessionSetDeleteSource(tr_session* session, bool delete_source);
 
-tr_priority_t tr_torrentGetPriority(tr_torrent const* tor);
-void tr_torrentSetPriority(tr_torrent* tor, tr_priority_t priority);
+tr_torrent_priority_t tr_torrentGetPriority(tr_torrent const* tor);
+void tr_torrentSetPriority(tr_torrent* tor, tr_torrent_priority_t priority);
 
 int tr_sessionGetAntiBruteForceThreshold(tr_session const* session);
 void tr_sessionSetAntiBruteForceThreshold(tr_session* session, int max_bad_requests);
@@ -816,7 +818,11 @@ bool tr_ctorGetPaused(tr_ctor const* ctor, tr_ctorMode mode, bool* setme_is_paus
 void tr_ctorSetPaused(tr_ctor* ctor, tr_ctorMode mode, bool is_paused);
 
 /** @brief Set the priorities for files in a torrent */
-void tr_ctorSetFilePriorities(tr_ctor* ctor, tr_file_index_t const* files, tr_file_index_t file_count, tr_priority_t priority);
+void tr_ctorSetFilePriorities(
+    tr_ctor* ctor,
+    tr_file_index_t const* files,
+    tr_file_index_t file_count,
+    tr_file_priority_t priority);
 
 /** @brief Set the download flag for files in a torrent */
 void tr_ctorSetFilesWanted(tr_ctor* ctor, tr_file_index_t const* files, tr_file_index_t file_count, bool wanted);
@@ -1039,13 +1045,23 @@ bool tr_torrentGetSeedIdle(tr_torrent const* tor, uint16_t* minutes);
 uint16_t tr_torrentGetPeerLimit(tr_torrent const* tor);
 void tr_torrentSetPeerLimit(tr_torrent* tor, uint16_t max_connected_peers);
 
+// --- Torrent Bandwidth Priority
+
+enum tr_torrent_priority_t : int8_t
+{
+    TR_TOR_PRI_LOW = -1,
+    TR_TOR_PRI_NORMAL = 0,
+    TR_TOR_PRI_HIGH = 1,
+    TR_TOR_PRI_FORCE = TR_TOR_PRI_HIGH + 1
+};
+
 // --- File Priorities
 
-enum
+enum tr_file_priority_t : int8_t
 {
     TR_PRI_LOW = -1,
     TR_PRI_NORMAL = 0, /* since Normal is 0, memset initializes nicely */
-    TR_PRI_HIGH = 1
+    TR_PRI_HIGH = 1,
 };
 
 /**
@@ -1057,7 +1073,7 @@ void tr_torrentSetFilePriorities(
     tr_torrent* torrent,
     tr_file_index_t const* files,
     tr_file_index_t file_count,
-    tr_priority_t priority);
+    tr_file_priority_t priority);
 
 /** @brief Set a batch of files to be downloaded or not. */
 void tr_torrentSetFileDLs(tr_torrent* torrent, tr_file_index_t const* files, tr_file_index_t n_files, bool wanted);
@@ -1334,7 +1350,7 @@ struct tr_file_view
     uint64_t have; // the current size of the file, i.e. how much we've downloaded
     uint64_t length; // the total size of the file
     double progress; // have / length
-    tr_priority_t priority; // the file's priority
+    tr_file_priority_t priority; // the file's priority
     bool wanted; // do we want to download this file?
 };
 tr_file_view tr_torrentFile(tr_torrent const* torrent, tr_file_index_t file);

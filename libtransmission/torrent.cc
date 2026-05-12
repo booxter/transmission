@@ -1999,17 +1999,17 @@ void tr_torrent::setBandwidthGroup(std::string_view group_name) noexcept
 
 // ---
 
-tr_priority_t tr_torrentGetPriority(tr_torrent const* tor)
+tr_torrent_priority_t tr_torrentGetPriority(tr_torrent const* tor)
 {
     TR_ASSERT(tr_isTorrent(tor));
 
     return tor->getPriority();
 }
 
-void tr_torrentSetPriority(tr_torrent* tor, tr_priority_t priority)
+void tr_torrentSetPriority(tr_torrent* tor, tr_torrent_priority_t priority)
 {
     TR_ASSERT(tr_isTorrent(tor));
-    TR_ASSERT(tr_isPriority(priority));
+    TR_ASSERT(tr_isTorrentPriority(priority));
 
     if (tor->bandwidth_.getPriority() != priority)
     {
@@ -2682,7 +2682,7 @@ void tr_torrentSetFilePriorities(
     tr_torrent* tor,
     tr_file_index_t const* files,
     tr_file_index_t file_count,
-    tr_priority_t priority)
+    tr_file_priority_t priority)
 {
     tor->setFilePriorities(files, file_count, priority);
 }

@@ -95,7 +95,7 @@ void tr_file_priorities::reset(tr_file_piece_map const* fpm)
     priorities_ = {};
 }
 
-void tr_file_priorities::set(tr_file_index_t file, tr_priority_t new_priority)
+void tr_file_priorities::set(tr_file_index_t file, tr_file_priority_t new_priority)
 {
     if (std::empty(priorities_))
     {
@@ -111,7 +111,7 @@ void tr_file_priorities::set(tr_file_index_t file, tr_priority_t new_priority)
     priorities_[file] = new_priority;
 }
 
-void tr_file_priorities::set(tr_file_index_t const* files, size_t n, tr_priority_t new_priority)
+void tr_file_priorities::set(tr_file_index_t const* files, size_t n, tr_file_priority_t new_priority)
 {
     for (size_t i = 0; i < n; ++i)
     {
@@ -119,7 +119,7 @@ void tr_file_priorities::set(tr_file_index_t const* files, size_t n, tr_priority
     }
 }
 
-tr_priority_t tr_file_priorities::filePriority(tr_file_index_t file) const
+tr_file_priority_t tr_file_priorities::filePriority(tr_file_index_t file) const
 {
     TR_ASSERT(file < std::size(*fpm_));
 
@@ -131,7 +131,7 @@ tr_priority_t tr_file_priorities::filePriority(tr_file_index_t file) const
     return priorities_[file];
 }
 
-tr_priority_t tr_file_priorities::piecePriority(tr_piece_index_t piece) const
+tr_file_priority_t tr_file_priorities::piecePriority(tr_piece_index_t piece) const
 {
     // increase priority if a file begins or ends in this piece
     // because that makes life easier for code/users using at incomplete files.

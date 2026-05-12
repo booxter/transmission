@@ -22,6 +22,17 @@ namespace libtransmission::test
 
 using RpcTest = SessionTest;
 
+namespace
+{
+
+void copyResponse(tr_session* /*session*/, tr_variant* response, void* setme) noexcept
+{
+    *static_cast<tr_variant*>(setme) = *response;
+    tr_variantInitBool(response, false);
+}
+
+} // namespace
+
 TEST_F(RpcTest, list)
 {
     auto i = int64_t{};
@@ -69,12 +80,6 @@ TEST_F(RpcTest, list)
 
 TEST_F(RpcTest, sessionGet)
 {
-    auto const rpc_response_func = [](tr_session* /*session*/, tr_variant* response, void* setme) noexcept
-    {
-        *static_cast<tr_variant*>(setme) = *response;
-        tr_variantInitBool(response, false);
-    };
-
     auto* tor = zeroTorrentInit(ZeroTorrentState::NoFiles);
     EXPECT_NE(nullptr, tor);
 
@@ -82,7 +87,7 @@ TEST_F(RpcTest, sessionGet)
     tr_variantInitDict(&request, 1);
     tr_variantDictAddStrView(&request, TR_KEY_method, "session-get");
     tr_variant response;
-    tr_rpc_request_exec_json(session_, &request, rpc_response_func, &response);
+    tr_rpc_request_exec_json(session_, &request, copyResponse, &response);
     tr_variantClear(&request);
 
     EXPECT_TRUE(tr_variantIsDict(&response));
@@ -181,6 +186,61 @@ TEST_F(RpcTest, sessionGet)
     EXPECT_EQ(decltype(unexpected_keys){}, unexpected_keys);
 
     // cleanup
+    tr_variantClear(&response);
+    tr_torrentRemove(tor, false, nullptr, nullptr);
+}
+
+TEST_F(RpcTest, torrentSetBandwidthPriorityForce)
+{
+    auto* tor = zeroTorrentInit(ZeroTorrentState::NoFiles);
+    ASSERT_NE(nullptr, tor);
+    EXPECT_EQ(TR_TOR_PRI_NORMAL, tr_torrentGetPriority(tor));
+
+    auto request = tr_variant{};
+    tr_variantInitDict(&request, 2);
+    tr_variantDictAddStrView(&request, TR_KEY_method, "torrent-set");
+    auto* args = tr_variantDictAddDict(&request, TR_KEY_arguments, 2);
+    auto* ids = tr_variantDictAddList(args, TR_KEY_ids, 1);
+    tr_variantListAddInt(ids, tr_torrentId(tor));
+    tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, TR_TOR_PRI_FORCE);
+
+    auto response = tr_variant{};
+    tr_rpc_request_exec_json(session_, &request, copyResponse, &response);
+    tr_variantClear(&request);
+
+    auto result = std::string_view{};
+    EXPECT_TRUE(tr_variantDictFindStrView(&response, TR_KEY_result, &result));
+    EXPECT_EQ("success"sv, result);
+    EXPECT_EQ(TR_TOR_PRI_FORCE, tr_torrentGetPriority(tor));
+    tr_variantClear(&response);
+
+    tr_variantInitDict(&request, 2);
+    tr_variantDictAddStrView(&request, TR_KEY_method, "torrent-get");
+    args = tr_variantDictAddDict(&request, TR_KEY_arguments, 2);
+    ids = tr_variantDictAddList(args, TR_KEY_ids, 1);
+    tr_variantListAddInt(ids, tr_torrentId(tor));
+    auto* fields = tr_variantDictAddList(args, TR_KEY_fields, 1);
+    tr_variantListAddStr(fields, "bandwidthPriority");
+
+    tr_rpc_request_exec_json(session_, &request, copyResponse, &response);
+    tr_variantClear(&request);
+
+    EXPECT_TRUE(tr_variantDictFindStrView(&response, TR_KEY_result, &result));
+    EXPECT_EQ("success"sv, result);
+
+    tr_variant* response_args = nullptr;
+    ASSERT_TRUE(tr_variantDictFindDict(&response, TR_KEY_arguments, &response_args));
+    tr_variant* torrents = nullptr;
+    ASSERT_TRUE(tr_variantDictFindList(response_args, TR_KEY_torrents, &torrents));
+    ASSERT_EQ(1U, tr_variantListSize(torrents));
+
+    tr_variant* torrent = tr_variantListChild(torrents, 0);
+    ASSERT_NE(nullptr, torrent);
+
+    auto bandwidth_priority = int64_t{};
+    EXPECT_TRUE(tr_variantDictFindInt(torrent, TR_KEY_bandwidthPriority, &bandwidth_priority));
+    EXPECT_EQ(TR_TOR_PRI_FORCE, bandwidth_priority);
+
     tr_variantClear(&response);
     tr_torrentRemove(tor, false, nullptr, nullptr);
 }

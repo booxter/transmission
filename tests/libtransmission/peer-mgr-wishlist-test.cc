@@ -23,7 +23,7 @@ protected:
         mutable std::map<tr_block_index_t, size_t> active_request_count_;
         mutable std::map<tr_piece_index_t, size_t> missing_block_count_;
         mutable std::map<tr_piece_index_t, tr_block_span_t> block_span_;
-        mutable std::map<tr_piece_index_t, tr_priority_t> piece_priority_;
+        mutable std::map<tr_piece_index_t, tr_file_priority_t> piece_priority_;
         mutable std::set<tr_block_index_t> can_request_block_;
         mutable std::set<tr_piece_index_t> can_request_piece_;
         tr_piece_index_t piece_count_ = 0;
@@ -64,7 +64,7 @@ protected:
             return piece_count_;
         }
 
-        [[nodiscard]] tr_priority_t priority(tr_piece_index_t piece) const final
+        [[nodiscard]] tr_file_priority_t priority(tr_piece_index_t piece) const final
         {
             return piece_priority_[piece];
         }

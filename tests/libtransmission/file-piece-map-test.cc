@@ -133,8 +133,8 @@ TEST_F(FilePieceMapTest, priorities)
     tr_file_index_t const n_files = std::size(FileSizes);
 
     // make a helper to compare file & piece priorities
-    auto expected_file_priorities = std::vector<tr_priority_t>(n_files, TR_PRI_NORMAL);
-    auto expected_piece_priorities = std::vector<tr_priority_t>(block_info_.pieceCount(), TR_PRI_NORMAL);
+    auto expected_file_priorities = std::vector<tr_file_priority_t>(n_files, TR_PRI_NORMAL);
+    auto expected_piece_priorities = std::vector<tr_file_priority_t>(block_info_.pieceCount(), TR_PRI_NORMAL);
     auto const compare_to_expected = [&, this]()
     {
         for (tr_file_index_t i = 0; i < n_files; ++i)

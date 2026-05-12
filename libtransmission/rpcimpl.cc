@@ -1012,7 +1012,7 @@ char const* setLabels(tr_torrent* tor, tr_variant* list)
     return nullptr;
 }
 
-char const* setFilePriorities(tr_torrent* tor, tr_priority_t priority, tr_variant* list)
+char const* setFilePriorities(tr_torrent* tor, tr_file_priority_t priority, tr_variant* list)
 {
     char const* errmsg = nullptr;
     auto const n_files = tor->fileCount();
@@ -1179,9 +1179,9 @@ char const* torrentSet(tr_session* session, tr_variant* args_in, tr_variant* /*a
 
         if (tr_variantDictFindInt(args_in, TR_KEY_bandwidthPriority, &tmp))
         {
-            auto const priority = tr_priority_t(tmp);
+            auto const priority = tr_torrent_priority_t(tmp);
 
-            if (tr_isPriority(priority))
+            if (tr_isTorrentPriority(priority))
             {
                 tr_torrentSetPriority(tor, priority);
             }
@@ -1637,7 +1637,7 @@ char const* torrentAdd(tr_session* session, tr_variant* args_in, tr_variant* /*a
 
     if (tr_variantDictFindInt(args_in, TR_KEY_bandwidthPriority, &i))
     {
-        tr_ctorSetBandwidthPriority(ctor, (tr_priority_t)i);
+        tr_ctorSetBandwidthPriority(ctor, static_cast<tr_torrent_priority_t>(i));
     }
 
     if (tr_variantDictFindList(args_in, TR_KEY_files_unwanted, &l))

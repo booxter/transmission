@@ -217,9 +217,42 @@ public:
         return priority_;
     }
 
-    constexpr void set_priority(tr_priority_t priority)
+    constexpr void set_priority(tr_torrent_priority_t priority)
     {
         priority_ = priority;
+    }
+
+    [[nodiscard]] constexpr bool has_pending_piece_requests() const noexcept
+    {
+        return has_pending_piece_requests_;
+    }
+
+    constexpr void set_has_pending_piece_requests(bool has_pending_requests) noexcept
+    {
+        has_pending_piece_requests_ = has_pending_requests;
+    }
+
+    [[nodiscard]] bool has_pending_piece_data() const noexcept
+    {
+        for (auto const& [n_bytes, is_piece_data] : outbuf_info_)
+        {
+            if (is_piece_data && n_bytes > 0U)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    [[nodiscard]] constexpr bool has_pending_download_requests() const noexcept
+    {
+        return has_pending_download_requests_;
+    }
+
+    constexpr void set_has_pending_download_requests(bool has_pending_requests) noexcept
+    {
+        has_pending_download_requests_ = has_pending_requests;
     }
 
     ///
@@ -351,7 +384,9 @@ private:
 
     short int pending_events_ = 0;
 
-    tr_priority_t priority_ = TR_PRI_NORMAL;
+    tr_torrent_priority_t priority_ = TR_TOR_PRI_NORMAL;
+    bool has_pending_piece_requests_ = false;
+    bool has_pending_download_requests_ = false;
 
     bool const is_seed_;
     bool const is_incoming_;

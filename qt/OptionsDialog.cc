@@ -88,10 +88,11 @@ OptionsDialog::OptionsDialog(Session& session, Prefs const& prefs, AddData addme
     connect(ui_.destinationEdit, &QLineEdit::editingFinished, this, &OptionsDialog::onDestinationChanged);
 
     ui_.filesView->setEditable(false);
-    ui_.priorityCombo->addItem(tr("High"), TR_PRI_HIGH);
-    ui_.priorityCombo->addItem(tr("Normal"), TR_PRI_NORMAL);
-    ui_.priorityCombo->addItem(tr("Low"), TR_PRI_LOW);
-    ui_.priorityCombo->setCurrentIndex(1); // Normal
+    ui_.priorityCombo->addItem(tr("Force"), TR_TOR_PRI_FORCE);
+    ui_.priorityCombo->addItem(tr("High"), TR_TOR_PRI_HIGH);
+    ui_.priorityCombo->addItem(tr("Normal"), TR_TOR_PRI_NORMAL);
+    ui_.priorityCombo->addItem(tr("Low"), TR_TOR_PRI_LOW);
+    ui_.priorityCombo->setCurrentIndex(ui_.priorityCombo->findData(TR_TOR_PRI_NORMAL));
 
     ui_.startCheck->setChecked(prefs.getBool(Prefs::START));
     ui_.trashCheck->setChecked(prefs.getBool(Prefs::TRASH_ORIGINAL));

@@ -134,7 +134,7 @@ void tr_bandwidth::setParent(tr_bandwidth* new_parent)
 // ---
 
 void tr_bandwidth::allocateBandwidth(
-    tr_priority_t parent_priority,
+    tr_torrent_priority_t parent_priority,
     unsigned int period_msec,
     std::vector<std::shared_ptr<tr_peerIo>>& peer_pool)
 {
@@ -164,7 +164,7 @@ void tr_bandwidth::allocateBandwidth(
     }
 }
 
-void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
+size_t tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
 {
     // First phase of IO. Tries to distribute bandwidth fairly to keep faster
     // peers from starving the others.
@@ -176,6 +176,7 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
 
     // Give each peer `Increment` bandwidth bytes to use. Repeat this
     // process until we run out of bandwidth and/or peers that can use it.
+    auto total_bytes_used = size_t{};
     for (size_t n_unfinished = std::size(peers); n_unfinished > 0U;)
     {
         for (size_t i = 0; i < n_unfinished;)
@@ -186,6 +187,7 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
             static auto constexpr Increment = size_t{ 3000 };
 
             auto const bytes_used = peers[i]->flush(dir, Increment);
+            total_bytes_used += bytes_used;
             tr_logAddTrace(fmt::format("peer #{} of {} used {} bytes in this pass", i, n_unfinished, bytes_used));
 
             if (bytes_used != Increment)
@@ -200,51 +202,145 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
             }
         }
     }
+
+    return total_bytes_used;
 }
 
 void tr_bandwidth::allocate(unsigned int period_msec)
 {
+    auto const can_use_force_upload_bandwidth = [](tr_peerIo const& io) noexcept
+    {
+        return io.priority() == TR_TOR_PRI_FORCE &&
+            (io.has_pending_piece_requests() || io.has_pending_piece_data()) &&
+            io.has_bandwidth_left(TR_UP);
+    };
+
+    auto const can_use_force_download_bandwidth = [](tr_peerIo const& io) noexcept
+    {
+        return io.priority() == TR_TOR_PRI_FORCE && io.has_pending_download_requests() && io.has_bandwidth_left(TR_DOWN);
+    };
+
     // keep these peers alive for the scope of this function
     auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
 
-    auto peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
-    auto& high = peer_arrays[0];
-    auto& normal = peer_arrays[1];
-    auto& low = peer_arrays[2];
+    auto force_upload_peers = std::vector<tr_peerIo*>{};
+    auto other_upload_peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
+    auto force_download_peers = std::vector<tr_peerIo*>{};
+    auto other_download_peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
+    auto force_peer_count = size_t{};
+
+    auto add_other_upload_peer = [](std::array<std::vector<tr_peerIo*>, 3>& peer_arrays, tr_torrent_priority_t priority, tr_peerIo* io)
+    {
+        switch (priority)
+        {
+        case TR_TOR_PRI_HIGH:
+            peer_arrays[0].push_back(io);
+            [[fallthrough]];
+
+        case TR_TOR_PRI_NORMAL:
+            peer_arrays[1].push_back(io);
+            [[fallthrough]];
+
+        default:
+            peer_arrays[2].push_back(io);
+        }
+    };
+
+    auto add_other_download_peer = [](std::array<std::vector<tr_peerIo*>, 3>& peer_arrays, tr_torrent_priority_t priority, tr_peerIo* io)
+    {
+        switch (priority)
+        {
+        case TR_TOR_PRI_HIGH:
+            peer_arrays[0].push_back(io);
+            [[fallthrough]];
+
+        case TR_TOR_PRI_NORMAL:
+            peer_arrays[1].push_back(io);
+            [[fallthrough]];
+
+        default:
+            peer_arrays[2].push_back(io);
+        }
+    };
+
+    auto run_force_first_pass = [&](std::vector<tr_peerIo*>& force_peers,
+                                    auto& other_peer_arrays,
+                                    tr_direction dir,
+                                    auto can_use_force_bandwidth,
+                                    uint8_t& hold_pulses,
+                                    uint8_t hold_pulse_count)
+    {
+        auto const force_bytes = phaseOne(force_peers, dir);
+
+        bool const has_force_demand = std::any_of(
+            std::begin(refs),
+            std::end(refs),
+            [&can_use_force_bandwidth](auto const& io) { return can_use_force_bandwidth(*io); });
+
+        if (force_bytes > 0U)
+        {
+            hold_pulses = hold_pulse_count;
+        }
+        else if (!has_force_demand && hold_pulses > 0U)
+        {
+            --hold_pulses;
+        }
+
+        bool const allow_other_peers = force_peer_count == 0U || (!has_force_demand && hold_pulses == 0U);
+        if (allow_other_peers)
+        {
+            for (auto& peers : other_peer_arrays)
+            {
+                (void)phaseOne(peers, dir);
+            }
+        }
+
+        return allow_other_peers;
+    };
 
     // allocateBandwidth () is a helper function with two purposes:
     // 1. allocate bandwidth to b and its subtree
     // 2. accumulate an array of all the peerIos from b and its subtree.
-    this->allocateBandwidth(TR_PRI_LOW, period_msec, refs);
+    this->allocateBandwidth(TR_TOR_PRI_LOW, period_msec, refs);
 
     for (auto const& io : refs)
     {
         io->flush_outgoing_protocol_msgs();
 
-        switch (io->priority())
+        if (io->priority() == TR_TOR_PRI_FORCE)
         {
-        case TR_PRI_HIGH:
-            high.push_back(io.get());
-            [[fallthrough]];
-
-        case TR_PRI_NORMAL:
-            normal.push_back(io.get());
-            [[fallthrough]];
-
-        default:
-            low.push_back(io.get());
+            ++force_peer_count;
+            force_upload_peers.push_back(io.get());
+            force_download_peers.push_back(io.get());
+        }
+        else
+        {
+            add_other_upload_peer(other_upload_peer_arrays, io->priority(), io.get());
+            add_other_download_peer(other_download_peer_arrays, io->priority(), io.get());
         }
     }
 
-    // First phase of IO. Tries to distribute bandwidth fairly to keep faster
-    // peers from starving the others. Loop through the peers, giving each a
-    // small chunk of bandwidth. Keep looping until we run out of bandwidth
-    // and/or peers that can use it
-    for (auto& peers : peer_arrays)
+    if (force_peer_count == 0U)
     {
-        phaseOne(peers, TR_UP);
-        phaseOne(peers, TR_DOWN);
+        force_upload_hold_pulses_ = 0U;
+        force_download_hold_pulses_ = 0U;
     }
+
+    bool const allow_other_uploads = run_force_first_pass(
+        force_upload_peers,
+        other_upload_peer_arrays,
+        TR_UP,
+        can_use_force_upload_bandwidth,
+        force_upload_hold_pulses_,
+        ForceUploadHoldPulses);
+
+    bool const allow_other_downloads = run_force_first_pass(
+        force_download_peers,
+        other_download_peer_arrays,
+        TR_DOWN,
+        can_use_force_download_bandwidth,
+        force_download_hold_pulses_,
+        ForceDownloadHoldPulses);
 
     // Second phase of IO. To help us scale in high bandwidth situations,
     // enable on-demand IO for peers with bandwidth left to burn.
@@ -252,8 +348,12 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     // or (2) the next tr_bandwidth::allocate () call, when we start over again.
     for (auto const& io : refs)
     {
-        io->set_enabled(TR_UP, io->has_bandwidth_left(TR_UP));
-        io->set_enabled(TR_DOWN, io->has_bandwidth_left(TR_DOWN));
+        auto const enable_upload =
+            io->has_bandwidth_left(TR_UP) && (allow_other_uploads || io->priority() == TR_TOR_PRI_FORCE);
+        io->set_enabled(TR_UP, enable_upload);
+        auto const enable_download =
+            io->has_bandwidth_left(TR_DOWN) && (allow_other_downloads || io->priority() == TR_TOR_PRI_FORCE);
+        io->set_enabled(TR_DOWN, enable_download);
     }
 }
 

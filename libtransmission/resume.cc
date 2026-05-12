@@ -219,7 +219,7 @@ auto loadFilePriorities(tr_variant* dict, tr_torrent* tor)
             auto priority = int64_t{};
             if (tr_variantGetInt(tr_variantListChild(list, i), &priority))
             {
-                tor->setFilePriority(i, tr_priority_t(priority));
+                tor->setFilePriority(i, tr_file_priority_t(priority));
             }
         }
 
@@ -738,10 +738,10 @@ auto loadFromFile(tr_torrent* tor, tr_resume::fields_t fields_to_load)
         fields_loaded |= tr_resume::TimeDownloading;
     }
 
-    if ((fields_to_load & tr_resume::BandwidthPriority) != 0 && tr_variantDictFindInt(&top, TR_KEY_bandwidth_priority, &i) &&
-        tr_isPriority(i))
+    if ((fields_to_load & tr_resume::BandwidthPriority) != 0 &&
+        tr_variantDictFindInt(&top, TR_KEY_bandwidth_priority, &i) && tr_isTorrentPriority(static_cast<tr_torrent_priority_t>(i)))
     {
-        tr_torrentSetPriority(tor, i);
+        tr_torrentSetPriority(tor, static_cast<tr_torrent_priority_t>(i));
         fields_loaded |= tr_resume::BandwidthPriority;
     }
 

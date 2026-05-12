@@ -119,12 +119,12 @@ public:
 
     void setParent(tr_bandwidth* new_parent);
 
-    [[nodiscard]] constexpr tr_priority_t getPriority() const noexcept
+    [[nodiscard]] constexpr tr_torrent_priority_t getPriority() const noexcept
     {
         return this->priority_;
     }
 
-    constexpr void setPriority(tr_priority_t prio) noexcept
+    constexpr void setPriority(tr_torrent_priority_t prio) noexcept
     {
         this->priority_ = prio;
     }
@@ -229,6 +229,9 @@ public:
     void setLimits(tr_bandwidth_limits const* limits);
 
 private:
+    static constexpr uint8_t ForceUploadHoldPulses = 1U;
+    static constexpr uint8_t ForceDownloadHoldPulses = 1U;
+
     struct RateControl
     {
         std::array<uint64_t, HistorySize> date_;
@@ -259,10 +262,10 @@ private:
 
     static void notifyBandwidthConsumedBytes(uint64_t now, RateControl* r, size_t size);
 
-    static void phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
+    [[nodiscard]] static size_t phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
 
     void allocateBandwidth(
-        tr_priority_t parent_priority,
+        tr_torrent_priority_t parent_priority,
         unsigned int period_msec,
         std::vector<std::shared_ptr<tr_peerIo>>& peer_pool);
 
@@ -270,7 +273,9 @@ private:
     std::vector<tr_bandwidth*> children_;
     tr_bandwidth* parent_ = nullptr;
     std::weak_ptr<tr_peerIo> peer_;
-    tr_priority_t priority_ = 0;
+    tr_torrent_priority_t priority_ = TR_TOR_PRI_NORMAL;
+    uint8_t force_upload_hold_pulses_ = 0;
+    uint8_t force_download_hold_pulses_ = 0;
 };
 
 /* @} */

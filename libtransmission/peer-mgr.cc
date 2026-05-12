@@ -345,6 +345,7 @@ public:
         {
             maybeSendCancelRequest(peer, block, nullptr);
             active_requests.remove(block, peer);
+            maybeUpdatePendingDownloadRequests(peer);
         }
     }
 
@@ -353,6 +354,7 @@ public:
         for (auto* peer : active_requests.remove(block))
         {
             maybeSendCancelRequest(peer, block, no_notify);
+            maybeUpdatePendingDownloadRequests(peer);
         }
     }
 
@@ -581,10 +583,12 @@ public:
 
         case tr_peer_event::Type::ClientGotRej:
             s->active_requests.remove(s->tor->pieceLoc(event.pieceIndex, event.offset).block, peer);
+            tr_swarm::maybeUpdatePendingDownloadRequests(peer);
             break;
 
         case tr_peer_event::Type::ClientGotChoke:
             s->active_requests.remove(peer);
+            tr_swarm::maybeUpdatePendingDownloadRequests(peer);
             break;
 
         case tr_peer_event::Type::ClientGotPort:
@@ -660,6 +664,14 @@ public:
     time_t lastCancel = 0;
 
 private:
+    static void maybeUpdatePendingDownloadRequests(tr_peer* peer)
+    {
+        if (auto* msgs = dynamic_cast<tr_peerMsgs*>(peer); msgs != nullptr)
+        {
+            msgs->update_pending_download_requests();
+        }
+    }
+
     static void maybeSendCancelRequest(tr_peer* peer, tr_block_index_t block, tr_peer const* muted)
     {
         auto* msgs = dynamic_cast<tr_peerMsgs*>(peer);
@@ -906,7 +918,7 @@ std::vector<tr_block_span_t> tr_peerMgrGetNextRequests(tr_torrent* torrent, tr_p
             return torrent_->pieceCount();
         }
 
-        [[nodiscard]] tr_priority_t priority(tr_piece_index_t piece) const override
+        [[nodiscard]] tr_file_priority_t priority(tr_piece_index_t piece) const override
         {
             return torrent_->piecePriority(piece);
         }
@@ -2335,16 +2347,21 @@ struct peer_candidate
     /* prefer peers belonging to a torrent of a higher priority */
     switch (tor->getPriority())
     {
-    case TR_PRI_HIGH:
+    case TR_TOR_PRI_FORCE:
         i = 0;
         break;
 
-    case TR_PRI_NORMAL:
+    case TR_TOR_PRI_HIGH:
         i = 1;
         break;
 
-    case TR_PRI_LOW:
+    case TR_TOR_PRI_NORMAL:
         i = 2;
+        break;
+
+    case TR_TOR_PRI_LOW:
+    default:
+        i = 3;
         break;
     }
 

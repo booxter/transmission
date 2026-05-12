@@ -623,9 +623,10 @@ void gtr_priority_combo_init(Gtk::ComboBox& combo)
     gtr_combo_box_set_enum(
         combo,
         {
-            { _("High"), TR_PRI_HIGH },
-            { _("Normal"), TR_PRI_NORMAL },
-            { _("Low"), TR_PRI_LOW },
+            { _("Force"), TR_TOR_PRI_FORCE },
+            { _("High"), TR_TOR_PRI_HIGH },
+            { _("Normal"), TR_TOR_PRI_NORMAL },
+            { _("Low"), TR_TOR_PRI_LOW },
         });
 }
 

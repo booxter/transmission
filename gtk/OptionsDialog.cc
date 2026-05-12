@@ -284,7 +284,7 @@ OptionsDialog::Impl::Impl(
     dialog.signal_response().connect(sigc::mem_fun(*this, &Impl::addResponseCB));
 
     gtr_priority_combo_init(*priority_combo_);
-    gtr_combo_box_set_active_enum(*priority_combo_, TR_PRI_NORMAL);
+    gtr_combo_box_set_active_enum(*priority_combo_, TR_TOR_PRI_NORMAL);
 
     auto* source_chooser = gtr_get_widget_derived<PathButton>(builder, "source_button");
     addTorrentFilters(source_chooser);

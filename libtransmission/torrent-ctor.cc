@@ -42,7 +42,7 @@ struct tr_ctor
 
     tr_torrent_metainfo metainfo = {};
 
-    tr_priority_t priority = TR_PRI_NORMAL;
+    tr_torrent_priority_t priority = TR_TOR_PRI_NORMAL;
 
     tr_torrent::labels_t labels{};
 
@@ -131,7 +131,7 @@ bool tr_ctorSaveContents(tr_ctor const* ctor, std::string_view filename, tr_erro
 
 // ---
 
-void tr_ctorSetFilePriorities(tr_ctor* ctor, tr_file_index_t const* files, tr_file_index_t file_count, tr_priority_t priority)
+void tr_ctorSetFilePriorities(tr_ctor* ctor, tr_file_index_t const* files, tr_file_index_t file_count, tr_file_priority_t priority)
 {
     switch (priority)
     {
@@ -305,9 +305,9 @@ tr_session* tr_ctorGetSession(tr_ctor const* ctor)
 
 // ---
 
-void tr_ctorSetBandwidthPriority(tr_ctor* ctor, tr_priority_t priority)
+void tr_ctorSetBandwidthPriority(tr_ctor* ctor, tr_torrent_priority_t priority)
 {
-    if (priority != TR_PRI_LOW && priority != TR_PRI_NORMAL && priority != TR_PRI_HIGH)
+    if (!tr_isTorrentPriority(priority))
     {
         return;
     }
@@ -315,7 +315,7 @@ void tr_ctorSetBandwidthPriority(tr_ctor* ctor, tr_priority_t priority)
     ctor->priority = priority;
 }
 
-tr_priority_t tr_ctorGetBandwidthPriority(tr_ctor const* ctor)
+tr_torrent_priority_t tr_ctorGetBandwidthPriority(tr_ctor const* ctor)
 {
     return ctor->priority;
 }

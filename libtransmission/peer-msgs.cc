@@ -524,6 +524,11 @@ public:
         }
     }
 
+    void update_pending_download_requests() noexcept override
+    {
+        io->set_has_pending_download_requests(activeReqCount(TR_CLIENT_TO_PEER) != 0U);
+    }
+
     void updateInterest()
     {
         // TODO -- might need to poke the mgr on startup
@@ -564,6 +569,7 @@ public:
             }
 
             tr_peerMgrClientSentRequests(torrent, this, *span);
+            update_pending_download_requests();
         }
     }
 
@@ -891,6 +897,7 @@ void cancelAllRequestsToClient(tr_peerMsgsImpl* msgs)
     }
 
     msgs->peer_requested_.clear();
+    msgs->io->set_has_pending_piece_requests(false);
 }
 
 // ---
@@ -1326,6 +1333,7 @@ void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
     if (canAddRequestFromPeer(msgs, *req))
     {
         msgs->peer_requested_.emplace_back(*req);
+        msgs->io->set_has_pending_piece_requests(true);
         prefetchPieces(msgs);
     }
     else if (msgs->io->supports_fext())
@@ -1545,6 +1553,7 @@ ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmissi
             if (auto iter = std::find(std::begin(requests), std::end(requests), r); iter != std::end(requests))
             {
                 requests.erase(iter);
+                msgs->io->set_has_pending_piece_requests(!std::empty(requests));
 
                 // bep6: "Even when a request is cancelled, the peer
                 // receiving the cancel should respond with either the
@@ -1985,6 +1994,7 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
     {
         req = msgs->peer_requested_.front();
         msgs->peer_requested_.erase(std::begin(msgs->peer_requested_));
+        msgs->io->set_has_pending_piece_requests(!std::empty(msgs->peer_requested_));
 
         if (msgs->isValidRequest(req) && msgs->torrent->hasPiece(req.index))
         {

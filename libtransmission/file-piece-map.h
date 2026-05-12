@@ -142,15 +142,15 @@ public:
     }
 
     void reset(tr_file_piece_map const*);
-    void set(tr_file_index_t file, tr_priority_t priority);
-    void set(tr_file_index_t const* files, size_t n, tr_priority_t priority);
+    void set(tr_file_index_t file, tr_file_priority_t priority);
+    void set(tr_file_index_t const* files, size_t n, tr_file_priority_t priority);
 
-    [[nodiscard]] tr_priority_t filePriority(tr_file_index_t file) const;
-    [[nodiscard]] tr_priority_t piecePriority(tr_piece_index_t piece) const;
+    [[nodiscard]] tr_file_priority_t filePriority(tr_file_index_t file) const;
+    [[nodiscard]] tr_file_priority_t piecePriority(tr_piece_index_t piece) const;
 
 private:
     tr_file_piece_map const* fpm_;
-    std::vector<tr_priority_t> priorities_;
+    std::vector<tr_file_priority_t> priorities_;
 };
 
 class tr_files_wanted

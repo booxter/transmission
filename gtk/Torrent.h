@@ -84,7 +84,7 @@ public:
     Glib::ustring get_name() const;
     Percents get_percent_complete() const;
     Percents get_percent_done() const;
-    tr_priority_t get_priority() const;
+    tr_torrent_priority_t get_priority() const;
     size_t get_queue_position() const;
     float get_ratio() const;
     Percents get_recheck_progress() const;

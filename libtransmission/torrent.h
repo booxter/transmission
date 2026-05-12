@@ -340,18 +340,18 @@ public:
 
     /// PRIORITIES
 
-    [[nodiscard]] tr_priority_t piecePriority(tr_piece_index_t piece) const
+    [[nodiscard]] tr_file_priority_t piecePriority(tr_piece_index_t piece) const
     {
         return file_priorities_.piecePriority(piece);
     }
 
-    void setFilePriorities(tr_file_index_t const* files, tr_file_index_t file_count, tr_priority_t priority)
+    void setFilePriorities(tr_file_index_t const* files, tr_file_index_t file_count, tr_file_priority_t priority)
     {
         file_priorities_.set(files, file_count, priority);
         setDirty();
     }
 
-    void setFilePriority(tr_file_index_t file, tr_priority_t priority)
+    void setFilePriority(tr_file_index_t file, tr_file_priority_t priority)
     {
         file_priorities_.set(file, priority);
         setDirty();
@@ -967,8 +967,8 @@ tr_torrent_metainfo tr_ctorStealMetainfo(tr_ctor* ctor);
 bool tr_ctorSetMetainfoFromFile(tr_ctor* ctor, std::string_view filename, tr_error** error = nullptr);
 bool tr_ctorSetMetainfoFromMagnetLink(tr_ctor* ctor, std::string_view magnet_link, tr_error** error = nullptr);
 void tr_ctorSetLabels(tr_ctor* ctor, tr_quark const* labels, size_t n_labels);
-void tr_ctorSetBandwidthPriority(tr_ctor* ctor, tr_priority_t priority);
-tr_priority_t tr_ctorGetBandwidthPriority(tr_ctor const* ctor);
+void tr_ctorSetBandwidthPriority(tr_ctor* ctor, tr_torrent_priority_t priority);
+tr_torrent_priority_t tr_ctorGetBandwidthPriority(tr_ctor const* ctor);
 tr_torrent::labels_t const& tr_ctorGetLabels(tr_ctor const* ctor);
 
 void tr_torrentOnVerifyDone(tr_torrent* tor, bool aborted);
