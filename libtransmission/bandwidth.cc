@@ -208,10 +208,11 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     // keep these peers alive for the scope of this function
     auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
 
-    auto peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
-    auto& high = peer_arrays[0];
-    auto& normal = peer_arrays[1];
-    auto& low = peer_arrays[2];
+    auto peer_arrays = std::array<std::vector<tr_peerIo*>, 4>{};
+    auto& force = peer_arrays[0];
+    auto& high = peer_arrays[1];
+    auto& normal = peer_arrays[2];
+    auto& low = peer_arrays[3];
 
     // allocateBandwidth () is a helper function with two purposes:
     // 1. allocate bandwidth to b and its subtree
@@ -222,11 +223,12 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     {
         io->flush_outgoing_protocol_msgs();
 
-        // FORCE is wired through the public API in this step, but it still
-        // shares HIGH's scheduler bucket for now. A later patch will give it
-        // dedicated bandwidth behavior.
-        switch (tr_torrentPriorityToSchedulingPriority(io->priority()))
+        switch (io->priority())
         {
+        case TR_PRI_FORCE:
+            force.push_back(io.get());
+            [[fallthrough]];
+
         case TR_PRI_HIGH:
             high.push_back(io.get());
             [[fallthrough]];

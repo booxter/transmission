@@ -8,6 +8,7 @@ target_sources(libtransmission-test
         announcer-test.cc
         announcer-udp-test.cc
         benc-test.cc
+        bandwidth-test.cc
         bitfield-test.cc
         block-info-test.cc
         blocklist-test.cc
