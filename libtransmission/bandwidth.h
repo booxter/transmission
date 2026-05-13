@@ -134,6 +134,22 @@ public:
      */
     [[nodiscard]] size_t clamp(tr_direction dir, size_t byte_count) const noexcept;
 
+    /**
+     * @brief clamps async non-FORCE upload piece bytes to the currently armed spillover budget
+     */
+    [[nodiscard]] size_t clampAsyncUploadPieceBytes(size_t byte_count, tr_priority_t peer_priority) const noexcept;
+
+    void setAsyncUploadPieceSpilloverBudget(size_t byte_count) noexcept
+    {
+        async_upload_piece_spillover_budget_left_ = byte_count;
+        enforce_async_upload_piece_spillover_budget_ = byte_count > 0U;
+    }
+
+    void clearAsyncUploadPieceSpilloverBudget() noexcept
+    {
+        setAsyncUploadPieceSpilloverBudget(0U);
+    }
+
     /** @brief Get the raw total of bytes read or sent by this bandwidth subtree. */
     [[nodiscard]] auto getRawSpeedBytesPerSecond(uint64_t const now, tr_direction const dir) const
     {
@@ -259,6 +275,13 @@ private:
 
     static void notifyBandwidthConsumedBytes(uint64_t now, RateControl* r, size_t size);
 
+    void notifyBandwidthConsumed(
+        tr_direction dir,
+        size_t byte_count,
+        bool is_piece_data,
+        uint64_t now,
+        tr_priority_t peer_priority);
+
     static void phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
 
     void allocateBandwidth(
@@ -271,6 +294,8 @@ private:
     tr_bandwidth* parent_ = nullptr;
     std::weak_ptr<tr_peerIo> peer_;
     tr_priority_t priority_ = TR_PRI_NORMAL;
+    size_t async_upload_piece_spillover_budget_left_ = 0U;
+    bool enforce_async_upload_piece_spillover_budget_ = false;
 };
 
 /* @} */

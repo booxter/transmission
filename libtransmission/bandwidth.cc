@@ -282,7 +282,43 @@ size_t tr_bandwidth::clamp(tr_direction const dir, size_t byte_count) const noex
     return byte_count;
 }
 
+size_t tr_bandwidth::clampAsyncUploadPieceBytes(size_t byte_count, tr_priority_t peer_priority) const noexcept
+{
+    if (peer_priority == TR_PRI_FORCE || byte_count == 0U)
+    {
+        return byte_count;
+    }
+
+    if (this->parent_ == nullptr && enforce_async_upload_piece_spillover_budget_)
+    {
+        byte_count = std::min(byte_count, async_upload_piece_spillover_budget_left_);
+    }
+
+    if (this->parent_ != nullptr && this->band_[TR_UP].honor_parent_limits_ && byte_count > 0U)
+    {
+        byte_count = this->parent_->clampAsyncUploadPieceBytes(byte_count, peer_priority);
+    }
+
+    return byte_count;
+}
+
 void tr_bandwidth::notifyBandwidthConsumed(tr_direction dir, size_t byte_count, bool is_piece_data, uint64_t now)
+{
+    auto peer_priority = this->priority_;
+    if (auto const shared = this->peer_.lock(); shared)
+    {
+        peer_priority = shared->priority();
+    }
+
+    notifyBandwidthConsumed(dir, byte_count, is_piece_data, now, peer_priority);
+}
+
+void tr_bandwidth::notifyBandwidthConsumed(
+    tr_direction dir,
+    size_t byte_count,
+    bool is_piece_data,
+    uint64_t now,
+    tr_priority_t peer_priority)
 {
     TR_ASSERT(tr_isDirection(dir));
 
@@ -314,11 +350,18 @@ void tr_bandwidth::notifyBandwidthConsumed(tr_direction dir, size_t byte_count, 
     if (is_piece_data)
     {
         notifyBandwidthConsumedBytes(now, &band->piece_, byte_count);
+
+        if (dir == TR_UP && this->parent_ == nullptr && enforce_async_upload_piece_spillover_budget_ &&
+            peer_priority != TR_PRI_FORCE)
+        {
+            async_upload_piece_spillover_budget_left_ -=
+                std::min(async_upload_piece_spillover_budget_left_, byte_count);
+        }
     }
 
     if (this->parent_ != nullptr)
     {
-        this->parent_->notifyBandwidthConsumed(dir, byte_count, is_piece_data, now);
+        this->parent_->notifyBandwidthConsumed(dir, byte_count, is_piece_data, now, peer_priority);
     }
 }
 

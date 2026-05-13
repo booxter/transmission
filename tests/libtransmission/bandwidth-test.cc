@@ -26,6 +26,81 @@ using namespace std::literals;
 namespace libtransmission::test
 {
 
+TEST(BandwidthMechanism, asyncUploadSpilloverClampBypassesForce)
+{
+    auto root = tr_bandwidth{};
+
+    root.setAsyncUploadPieceSpilloverBudget(1024U);
+
+    EXPECT_EQ(2048U, root.clampAsyncUploadPieceBytes(2048U, TR_PRI_FORCE));
+    EXPECT_EQ(1024U, root.clampAsyncUploadPieceBytes(2048U, TR_PRI_HIGH));
+}
+
+TEST(BandwidthMechanism, asyncUploadSpilloverBudgetDecrementsForNonForcePieceUploads)
+{
+    auto root = tr_bandwidth{};
+    auto child = tr_bandwidth{ &root };
+    auto constexpr Now = uint64_t{ 1U };
+
+    child.setPriority(TR_PRI_HIGH);
+    root.setAsyncUploadPieceSpilloverBudget(1024U);
+
+    EXPECT_EQ(1024U, child.clampAsyncUploadPieceBytes(2048U, child.getPriority()));
+
+    child.notifyBandwidthConsumed(TR_UP, 256U, true, Now);
+    EXPECT_EQ(768U, child.clampAsyncUploadPieceBytes(2048U, child.getPriority()));
+}
+
+TEST(BandwidthMechanism, asyncUploadSpilloverBudgetIgnoresProtocolBytes)
+{
+    auto root = tr_bandwidth{};
+    auto child = tr_bandwidth{ &root };
+    auto constexpr Now = uint64_t{ 1U };
+
+    child.setPriority(TR_PRI_HIGH);
+    root.setAsyncUploadPieceSpilloverBudget(1024U);
+
+    child.notifyBandwidthConsumed(TR_UP, 256U, false, Now);
+    EXPECT_EQ(1024U, child.clampAsyncUploadPieceBytes(2048U, child.getPriority()));
+}
+
+TEST(BandwidthMechanism, asyncUploadSpilloverBudgetIgnoresDownloadTraffic)
+{
+    auto root = tr_bandwidth{};
+    auto child = tr_bandwidth{ &root };
+    auto constexpr Now = uint64_t{ 1U };
+
+    child.setPriority(TR_PRI_HIGH);
+    root.setAsyncUploadPieceSpilloverBudget(1024U);
+
+    child.notifyBandwidthConsumed(TR_DOWN, 256U, true, Now);
+    EXPECT_EQ(1024U, child.clampAsyncUploadPieceBytes(2048U, child.getPriority()));
+}
+
+TEST(BandwidthMechanism, asyncUploadSpilloverBudgetIsNotConsumedByForceUploads)
+{
+    auto root = tr_bandwidth{};
+    auto child = tr_bandwidth{ &root };
+    auto constexpr Now = uint64_t{ 1U };
+
+    child.setPriority(TR_PRI_FORCE);
+    root.setAsyncUploadPieceSpilloverBudget(1024U);
+
+    child.notifyBandwidthConsumed(TR_UP, 256U, true, Now);
+    EXPECT_EQ(1024U, root.clampAsyncUploadPieceBytes(2048U, TR_PRI_HIGH));
+}
+
+TEST(BandwidthMechanism, asyncUploadSpilloverBudgetCanBeCleared)
+{
+    auto root = tr_bandwidth{};
+
+    root.setAsyncUploadPieceSpilloverBudget(1024U);
+    EXPECT_EQ(1024U, root.clampAsyncUploadPieceBytes(2048U, TR_PRI_HIGH));
+
+    root.clearAsyncUploadPieceSpilloverBudget();
+    EXPECT_EQ(2048U, root.clampAsyncUploadPieceBytes(2048U, TR_PRI_HIGH));
+}
+
 class BandwidthTest : public SessionTest
 {
 protected:
