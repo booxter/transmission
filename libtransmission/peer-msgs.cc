@@ -1272,6 +1272,7 @@ void parseLtep(tr_peerMsgsImpl* msgs, libtransmission::Buffer& payload)
 using ReadResult = std::pair<ReadState, size_t /*n_piece_data_bytes_read*/>;
 
 ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmission::Buffer& payload);
+size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now);
 
 void prefetchPieces(tr_peerMsgsImpl* msgs)
 {
@@ -1327,6 +1328,13 @@ void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
     {
         msgs->peer_requested_.emplace_back(*req);
         prefetchPieces(msgs);
+
+        if (msgs->torrent->getPriority() == TR_PRI_FORCE)
+        {
+            // Queue FORCE uploads immediately so fresh request demand can
+            // participate in the current write/pulse opportunity.
+            fillOutputBuffer(msgs, tr_time());
+        }
     }
     else if (msgs->io->supports_fext())
     {
