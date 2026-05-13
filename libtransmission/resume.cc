@@ -739,7 +739,7 @@ auto loadFromFile(tr_torrent* tor, tr_resume::fields_t fields_to_load)
     }
 
     if ((fields_to_load & tr_resume::BandwidthPriority) != 0 && tr_variantDictFindInt(&top, TR_KEY_bandwidth_priority, &i) &&
-        tr_isPriority(i))
+        tr_isTorrentPriority(i))
     {
         tr_torrentSetPriority(tor, i);
         fields_loaded |= tr_resume::BandwidthPriority;

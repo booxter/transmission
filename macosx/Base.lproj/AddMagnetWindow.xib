@@ -131,6 +131,9 @@ Gw
                                         <font key="font" metaFont="menu"/>
                                         <menu key="menu" id="87">
                                             <items>
+                                                <menuItem title="Force" image="PriorityHighTemplate" id="Fr1-aMg-000">
+                                                    <modifierMask key="keyEquivalentModifierMask"/>
+                                                </menuItem>
                                                 <menuItem title="High" state="on" image="PriorityHighTemplate" id="90">
                                                     <modifierMask key="keyEquivalentModifierMask"/>
                                                 </menuItem>

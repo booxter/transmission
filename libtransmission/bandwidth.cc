@@ -15,6 +15,7 @@
 #include "crypto-utils.h"
 #include "log.h"
 #include "peer-io.h"
+#include "session.h"
 #include "tr-assert.h"
 #include "utils.h" // tr_time_msec()
 
@@ -221,7 +222,10 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     {
         io->flush_outgoing_protocol_msgs();
 
-        switch (io->priority())
+        // FORCE is wired through the public API in this step, but it still
+        // shares HIGH's scheduler bucket for now. A later patch will give it
+        // dedicated bandwidth behavior.
+        switch (tr_torrentPriorityToSchedulingPriority(io->priority()))
         {
         case TR_PRI_HIGH:
             high.push_back(io.get());

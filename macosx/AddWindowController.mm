@@ -13,9 +13,10 @@
 static NSTimeInterval const kUpdateSeconds = 1.0;
 
 typedef NS_ENUM(NSUInteger, PopupPriority) {
-    PopupPriorityHigh = 0,
-    PopupPriorityNormal = 1,
-    PopupPriorityLow = 2,
+    PopupPriorityForce = 0,
+    PopupPriorityHigh = 1,
+    PopupPriorityNormal = 2,
+    PopupPriorityLow = 3,
 };
 
 @interface AddWindowController ()
@@ -127,6 +128,10 @@ typedef NS_ENUM(NSUInteger, PopupPriority) {
     PopupPriority priorityIndex;
     switch (self.torrent.priority)
     {
+    case TR_PRI_FORCE:
+        priorityIndex = PopupPriorityForce;
+        break;
+
     case TR_PRI_HIGH:
         priorityIndex = PopupPriorityHigh;
         break;
@@ -287,6 +292,10 @@ typedef NS_ENUM(NSUInteger, PopupPriority) {
     tr_priority_t priority;
     switch ([sender indexOfSelectedItem])
     {
+    case PopupPriorityForce:
+        priority = TR_PRI_FORCE;
+        break;
+
     case PopupPriorityHigh:
         priority = TR_PRI_HIGH;
         break;

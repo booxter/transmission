@@ -219,7 +219,7 @@ enum
 ****
 ***/
 
-static auto constexpr Options = std::array<tr_option, 98>{
+static auto constexpr Options = std::array<tr_option, 99>{
     { { 'a', "add", "Add torrent files by filename or URL", "a", false, nullptr },
       { 970, "alt-speed", "Use the alternate Limits", "as", false, nullptr },
       { 971, "no-alt-speed", "Don't use the alternate Limits", "AS", false, nullptr },
@@ -283,6 +283,7 @@ static auto constexpr Options = std::array<tr_option, 98>{
       { 900, "priority-high", "Try to download these file(s) first", "ph", true, "<files>" },
       { 901, "priority-normal", "Try to download these file(s) normally", "pn", true, "<files>" },
       { 902, "priority-low", "Try to download these file(s) last", "pl", true, "<files>" },
+      { 703, "bandwidth-force", "Set this torrent's bandwidth priority to Force", "Bf", false, nullptr },
       { 700, "bandwidth-high", "Give this torrent first chance at available bandwidth", "Bh", false, nullptr },
       { 701, "bandwidth-normal", "Give this torrent bandwidth left over by high priority torrents", "Bn", false, nullptr },
       { 702,
@@ -463,6 +464,7 @@ static int getOptMode(int val)
     case 'g': /* get */
     case 'G': /* no-get */
     case 'L': /* labels */
+    case 703: /* torrent priority-force */
     case 700: /* torrent priority-high */
     case 701: /* torrent priority-normal */
     case 702: /* torrent priority-low */
@@ -891,12 +893,26 @@ static std::string getStatusString(tr_variant* t)
     }
 }
 
-static auto constexpr bandwidth_priority_names = std::array<std::string_view, 4>{
-    "Low"sv,
-    "Normal"sv,
-    "High"sv,
-    "Invalid"sv,
-};
+[[nodiscard]] constexpr auto torrent_bandwidth_priority_name(int64_t priority) noexcept -> std::string_view
+{
+    switch (priority)
+    {
+    case TR_PRI_LOW:
+        return "Low"sv;
+
+    case TR_PRI_NORMAL:
+        return "Normal"sv;
+
+    case TR_PRI_HIGH:
+        return "High"sv;
+
+    case TR_PRI_FORCE:
+        return "Force"sv;
+
+    default:
+        return "Invalid"sv;
+    }
+}
 
 static char* format_date(char* buf, size_t buflen, time_t now)
 {
@@ -1223,7 +1239,7 @@ static void printDetails(tr_variant* top)
 
             if (tr_variantDictFindInt(t, TR_KEY_bandwidthPriority, &i))
             {
-                fmt::print("  Bandwidth Priority: {:s}\n", bandwidth_priority_names[(i + 1) & 3]);
+                fmt::print("  Bandwidth Priority: {:s}\n", torrent_bandwidth_priority_name(i));
             }
 
             fmt::print("\n");
@@ -2942,16 +2958,20 @@ static int processArgs(char const* rpcurl, int argc, char const* const* argv, Co
                 addFiles(args, TR_KEY_priority_low, optarg);
                 break;
 
+            case 703:
+                tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, TR_PRI_FORCE);
+                break;
+
             case 700:
-                tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, 1);
+                tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, TR_PRI_HIGH);
                 break;
 
             case 701:
-                tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, 0);
+                tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, TR_PRI_NORMAL);
                 break;
 
             case 702:
-                tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, -1);
+                tr_variantDictAddInt(args, TR_KEY_bandwidthPriority, TR_PRI_LOW);
                 break;
 
             case 710:

@@ -270,7 +270,7 @@ private:
     std::vector<tr_bandwidth*> children_;
     tr_bandwidth* parent_ = nullptr;
     std::weak_ptr<tr_peerIo> peer_;
-    tr_priority_t priority_ = 0;
+    tr_priority_t priority_ = TR_PRI_NORMAL;
 };
 
 /* @} */

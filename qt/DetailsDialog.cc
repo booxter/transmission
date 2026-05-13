@@ -1459,6 +1459,7 @@ void DetailsDialog::initOptionsTab()
     ui_.idleSpin->setProperty(PrefKey, TR_KEY_seedIdleLimit);
     ui_.peerLimitSpin->setProperty(PrefKey, TR_KEY_peer_limit);
 
+    ui_.bandwidthPriorityCombo->addItem(tr("Force"), TR_PRI_FORCE);
     ui_.bandwidthPriorityCombo->addItem(tr("High"), TR_PRI_HIGH);
     ui_.bandwidthPriorityCombo->addItem(tr("Normal"), TR_PRI_NORMAL);
     ui_.bandwidthPriorityCombo->addItem(tr("Low"), TR_PRI_LOW);

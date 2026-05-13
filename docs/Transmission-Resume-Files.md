@@ -18,7 +18,7 @@ The file contains the following **per-torrent** properties:
 <tr><td><tt>peers2</tt></td><td>IPv4 peers</td></tr>
 <tr><td><tt>peers2-6</tt></td><td>IPv6 peers</td></tr>
 <tr><td><tt>priority</tt></td><td>list of file download priorities (one item per file in torrent),<br/>each value is -1 (low), 0 (std), +1 (high)</td></tr>
-<tr><td><tt>bandwidth-priority</tt></td><td></td></tr>
+<tr><td><tt>bandwidth-priority</tt></td><td>torrent bandwidth priority; values are -1 (low), 0 (std), +1 (high), +2 (force)</td></tr>
 <tr><td><tt>progress</tt></td><td></td></tr>
 <tr><td><tt>speed-limit</tt></td><td></td></tr>
 <tr><td><tt>speed-limit-up</tt></td><td>Torrent upload speed limit</td></tr>

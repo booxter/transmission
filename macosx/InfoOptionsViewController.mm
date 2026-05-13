@@ -13,9 +13,10 @@ typedef NS_ENUM(NSInteger, OptionPopupType) {
 };
 
 typedef NS_ENUM(NSUInteger, OptionPopupPriority) {
-    OptionPopupPriorityHigh = 0,
-    OptionPopupPriorityNormal = 1,
-    OptionPopupPriorityLow = 2,
+    OptionPopupPriorityForce = 0,
+    OptionPopupPriorityHigh = 1,
+    OptionPopupPriorityNormal = 2,
+    OptionPopupPriorityLow = 3,
 };
 
 static NSInteger const kInvalidValue = -99;
@@ -406,7 +407,11 @@ static CGFloat const kStackViewSpacing = 8.0;
     }
 
     //set priority view
-    if (priority == TR_PRI_HIGH)
+    if (priority == TR_PRI_FORCE)
+    {
+        index = OptionPopupPriorityForce;
+    }
+    else if (priority == TR_PRI_HIGH)
     {
         index = OptionPopupPriorityHigh;
     }
@@ -633,6 +638,10 @@ static CGFloat const kStackViewSpacing = 8.0;
     tr_priority_t priority;
     switch ([sender indexOfSelectedItem])
     {
+    case OptionPopupPriorityForce:
+        priority = TR_PRI_FORCE;
+        break;
+
     case OptionPopupPriorityHigh:
         priority = TR_PRI_HIGH;
         break;

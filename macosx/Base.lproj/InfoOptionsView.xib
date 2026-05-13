@@ -109,6 +109,7 @@
                                         <font key="font" metaFont="smallSystem"/>
                                         <menu key="menu" id="49">
                                             <items>
+                                                <menuItem title="Force" image="PriorityHighTemplate" id="Fr1-iOv-000"/>
                                                 <menuItem title="High" image="PriorityHighTemplate" id="52"/>
                                                 <menuItem title="Normal" state="on" image="PriorityNormalTemplate" tag="1" id="51"/>
                                                 <menuItem title="Low" image="PriorityLowTemplate" tag="2" id="50"/>

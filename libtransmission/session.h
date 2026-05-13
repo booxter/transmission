@@ -1155,7 +1155,19 @@ public:
     std::unique_ptr<libtransmission::Timer> utp_timer;
 };
 
+// TODO: `tr_isPriority()` predates `TR_PRI_FORCE`; it is really a file-priority
+// validator and should probably be renamed when the API can absorb it.
 constexpr bool tr_isPriority(tr_priority_t p)
 {
     return p == TR_PRI_LOW || p == TR_PRI_NORMAL || p == TR_PRI_HIGH;
+}
+
+constexpr bool tr_isTorrentPriority(tr_priority_t p)
+{
+    return tr_isPriority(p) || p == TR_PRI_FORCE;
+}
+
+constexpr tr_priority_t tr_torrentPriorityToSchedulingPriority(tr_priority_t p)
+{
+    return p == TR_PRI_FORCE ? TR_PRI_HIGH : p;
 }

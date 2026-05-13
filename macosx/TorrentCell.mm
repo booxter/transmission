@@ -470,7 +470,10 @@ static NSInteger const kMaxPieces = 18 * 18;
 
         NSColor* priorityColor = self.backgroundStyle == NSBackgroundStyleEmphasized ? NSColor.whiteColor : NSColor.labelColor;
 
-        NSImage* priorityImage = [[NSImage imageNamed:(torrent.priority == TR_PRI_HIGH ? @"PriorityHighTemplate" : @"PriorityLowTemplate")]
+        // TODO: Give FORCE its own icon once the macOS asset exists.
+        NSImage* priorityImage = [[NSImage imageNamed:(
+            torrent.priority == TR_PRI_HIGH || torrent.priority == TR_PRI_FORCE ? @"PriorityHighTemplate" :
+                                                                                  @"PriorityLowTemplate")]
             imageWithColor:priorityColor];
         [priorityImage drawInRect:priorityRect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0
                    respectFlipped:YES

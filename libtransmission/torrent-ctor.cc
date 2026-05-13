@@ -307,7 +307,7 @@ tr_session* tr_ctorGetSession(tr_ctor const* ctor)
 
 void tr_ctorSetBandwidthPriority(tr_ctor* ctor, tr_priority_t priority)
 {
-    if (priority != TR_PRI_LOW && priority != TR_PRI_NORMAL && priority != TR_PRI_HIGH)
+    if (!tr_isTorrentPriority(priority))
     {
         return;
     }

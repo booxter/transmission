@@ -27,6 +27,7 @@ typedef NS_ENUM(NSUInteger, ActionMenuTag) {
 };
 
 typedef NS_ENUM(NSUInteger, ActionMenuPriorityTag) {
+    ActionMenuPriorityTagForce = 100,
     ActionMenuPriorityTagHigh = 101,
     ActionMenuPriorityTagNormal = 102,
     ActionMenuPriorityTagLow = 103,
@@ -954,7 +955,10 @@ static NSTimeInterval const kToggleProgressSeconds = 0.175;
     {
         tr_priority_t const priority = self.fMenuTorrent.priority;
 
-        NSMenuItem* item = [menu itemWithTag:ActionMenuPriorityTagHigh];
+        NSMenuItem* item = [menu itemWithTag:ActionMenuPriorityTagForce];
+        item.state = priority == TR_PRI_FORCE ? NSControlStateValueOn : NSControlStateValueOff;
+
+        item = [menu itemWithTag:ActionMenuPriorityTagHigh];
         item.state = priority == TR_PRI_HIGH ? NSControlStateValueOn : NSControlStateValueOff;
 
         item = [menu itemWithTag:ActionMenuPriorityTagNormal];
@@ -1026,6 +1030,10 @@ static NSTimeInterval const kToggleProgressSeconds = 0.175;
     tr_priority_t priority;
     switch ([sender tag])
     {
+    case ActionMenuPriorityTagForce:
+        priority = TR_PRI_FORCE;
+        break;
+
     case ActionMenuPriorityTagHigh:
         priority = TR_PRI_HIGH;
         break;

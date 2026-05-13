@@ -18,6 +18,7 @@
 #include "completion.h"
 #include "crypto-utils.h"
 #include "file.h"
+#include "session.h"
 #include "log.h"
 #include "torrent.h"
 #include "tr-assert.h"
@@ -36,8 +37,8 @@ auto constexpr SleepPerSecondDuringVerify = 100ms;
 int tr_verify_worker::Node::compare(tr_verify_worker::Node const& that) const
 {
     // higher priority comes before lower priority
-    auto const pa = tr_torrentGetPriority(torrent);
-    auto const pb = tr_torrentGetPriority(that.torrent);
+    auto const pa = tr_torrentPriorityToSchedulingPriority(tr_torrentGetPriority(torrent));
+    auto const pb = tr_torrentPriorityToSchedulingPriority(tr_torrentGetPriority(that.torrent));
     if (pa != pb)
     {
         return pa > pb ? -1 : 1;

@@ -2009,7 +2009,7 @@ tr_priority_t tr_torrentGetPriority(tr_torrent const* tor)
 void tr_torrentSetPriority(tr_torrent* tor, tr_priority_t priority)
 {
     TR_ASSERT(tr_isTorrent(tor));
-    TR_ASSERT(tr_isPriority(priority));
+    TR_ASSERT(tr_isTorrentPriority(priority));
 
     if (tor->bandwidth_.getPriority() != priority)
     {

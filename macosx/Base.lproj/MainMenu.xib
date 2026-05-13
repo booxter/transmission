@@ -899,6 +899,12 @@ CA
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <menu key="submenu" title="Priority" id="3197">
                         <items>
+                            <menuItem title="Force" image="PriorityHighTemplate" tag="100" id="Fr1-mMn-000">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="setPriority:" target="3091" id="Fr1-mMn-001"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="High" image="PriorityHighTemplate" tag="101" id="3198">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

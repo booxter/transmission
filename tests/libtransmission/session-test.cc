@@ -174,6 +174,38 @@ TEST_F(SessionTest, propertiesApi)
     }
 }
 
+TEST_F(SessionTest, bandwidthPriorityApi)
+{
+    EXPECT_TRUE(tr_isPriority(TR_PRI_LOW));
+    EXPECT_TRUE(tr_isPriority(TR_PRI_NORMAL));
+    EXPECT_TRUE(tr_isPriority(TR_PRI_HIGH));
+    EXPECT_FALSE(tr_isPriority(TR_PRI_FORCE));
+
+    EXPECT_TRUE(tr_isTorrentPriority(TR_PRI_LOW));
+    EXPECT_TRUE(tr_isTorrentPriority(TR_PRI_NORMAL));
+    EXPECT_TRUE(tr_isTorrentPriority(TR_PRI_HIGH));
+    EXPECT_TRUE(tr_isTorrentPriority(TR_PRI_FORCE));
+
+    EXPECT_EQ(TR_PRI_HIGH, tr_torrentPriorityToSchedulingPriority(TR_PRI_FORCE));
+
+    auto* ctor = tr_ctorNew(session_);
+    ASSERT_NE(nullptr, ctor);
+    EXPECT_EQ(TR_PRI_NORMAL, tr_ctorGetBandwidthPriority(ctor));
+
+    tr_ctorSetBandwidthPriority(ctor, TR_PRI_FORCE);
+    EXPECT_EQ(TR_PRI_FORCE, tr_ctorGetBandwidthPriority(ctor));
+    tr_ctorFree(ctor);
+
+    auto* tor = zeroTorrentInit(ZeroTorrentState::NoFiles);
+    ASSERT_NE(nullptr, tor);
+    EXPECT_EQ(TR_PRI_NORMAL, tr_torrentGetPriority(tor));
+
+    tr_torrentSetPriority(tor, TR_PRI_FORCE);
+    EXPECT_EQ(TR_PRI_FORCE, tr_torrentGetPriority(tor));
+
+    tr_torrentRemove(tor, false, nullptr, nullptr);
+}
+
 TEST_F(SessionTest, peerId)
 {
     auto const peer_id_prefix = std::string{ PEERID_PREFIX };
