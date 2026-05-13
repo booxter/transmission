@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cstdlib> // getenv()
 #include <cstring> // strlen()
+#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex> // std::once_flag()
@@ -21,6 +22,8 @@
 #include <libtransmission/crypto-utils.h> // tr_base64_decode()
 #include <libtransmission/error.h>
 #include <libtransmission/file.h> // tr_sys_file_*()
+#include <libtransmission/peer-mgr.h>
+#include <libtransmission/peer-socket.h>
 #include <libtransmission/platform.h> // TR_PATH_DELIMITER
 #include <libtransmission/quark.h>
 #include <libtransmission/torrent.h>
@@ -505,6 +508,26 @@ protected:
         };
         tr_torrentVerify(tor);
         verified_cv_.wait_for(verified_lock, 20s, stop_waiting);
+    }
+
+    void addIncomingPeerSocket(tr_peer_socket&& socket)
+    {
+        auto shared_socket = std::make_shared<tr_peer_socket>(std::move(socket));
+        session_->runInSessionThread(
+            [this, shared_socket]()
+            {
+                tr_peerMgrAddIncoming(session_->peer_mgr_.get(), std::move(*shared_socket));
+            });
+    }
+
+    void flushSessionThread()
+    {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+
+        session_->runInSessionThread([promise]() { promise->set_value(); });
+
+        EXPECT_EQ(std::future_status::ready, future.wait_for(20s));
     }
 
     tr_session* session_ = nullptr;

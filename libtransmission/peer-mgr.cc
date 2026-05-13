@@ -1830,10 +1830,16 @@ void rechokeUploads(tr_swarm* s, uint64_t const now)
     auto const* const session = s->manager->session;
     bool const choke_all = !s->tor->clientCanUpload();
     bool const is_maxed_out = s->tor->bandwidth_.is_maxed_out(TR_UP, now);
+    bool const is_force_torrent = s->tor->getPriority() == TR_PRI_FORCE;
 
     /* an optimistic unchoke peer's "optimistic"
      * state lasts for N calls to rechokeUploads(). */
-    if (s->optimistic_unchoke_time_scaler > 0)
+    if (is_force_torrent)
+    {
+        s->optimistic = nullptr;
+        s->optimistic_unchoke_time_scaler = 0;
+    }
+    else if (s->optimistic_unchoke_time_scaler > 0)
     {
         --s->optimistic_unchoke_time_scaler;
     }
@@ -1866,6 +1872,23 @@ void rechokeUploads(tr_swarm* s, uint64_t const now)
                 peer->is_peer_choked(),
                 true);
         }
+    }
+
+    if (is_force_torrent)
+    {
+        // FORCE torrents bypass tit-for-tat slotting here so upload demand can
+        // form quickly; the bandwidth layer still arbitrates actual bytes sent.
+        for (auto& item : choked)
+        {
+            item.is_choked = !item.is_interested;
+        }
+
+        for (auto& item : choked)
+        {
+            item.msgs->set_choke(item.is_choked);
+        }
+
+        return;
     }
 
     std::sort(std::begin(choked), std::end(choked));
