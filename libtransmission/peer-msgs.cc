@@ -1482,6 +1482,10 @@ ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmissi
         logtrace(msgs, "got Interested");
         msgs->peer_is_interested_ = true;
         msgs->update_active(TR_CLIENT_TO_PEER);
+        if (msgs->torrent->getPriority() == TR_PRI_FORCE)
+        {
+            tr_peerMgrRechokeSoon(msgs->torrent);
+        }
         break;
 
     case BtPeerMsgs::NotInterested:

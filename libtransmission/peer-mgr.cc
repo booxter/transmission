@@ -1379,6 +1379,16 @@ void tr_peerMgrStopTorrent(tr_torrent* tor)
     tor->swarm->stop();
 }
 
+void tr_peerMgrRechokeSoon(tr_torrent* tor)
+{
+    TR_ASSERT(tr_isTorrent(tor));
+
+    if (tor->swarm != nullptr)
+    {
+        tor->swarm->manager->rechokeSoon();
+    }
+}
+
 void tr_peerMgrAddTorrent(tr_peerMgr* manager, tr_torrent* tor)
 {
     TR_ASSERT(tr_isTorrent(tor));

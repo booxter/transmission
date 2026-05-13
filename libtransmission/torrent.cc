@@ -2011,11 +2011,18 @@ void tr_torrentSetPriority(tr_torrent* tor, tr_priority_t priority)
     TR_ASSERT(tr_isTorrent(tor));
     TR_ASSERT(tr_isTorrentPriority(priority));
 
-    if (tor->bandwidth_.getPriority() != priority)
+    auto const old_priority = tor->bandwidth_.getPriority();
+
+    if (old_priority != priority)
     {
         tor->bandwidth_.setPriority(priority);
 
         tor->setDirty();
+
+        if (old_priority == TR_PRI_FORCE || priority == TR_PRI_FORCE)
+        {
+            tr_peerMgrRechokeSoon(tor);
+        }
     }
 }
 

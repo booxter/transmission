@@ -203,6 +203,9 @@ TEST_F(SessionTest, bandwidthPriorityApi)
     tr_torrentSetPriority(tor, TR_PRI_FORCE);
     EXPECT_EQ(TR_PRI_FORCE, tr_torrentGetPriority(tor));
 
+    tr_torrentSetPriority(tor, TR_PRI_NORMAL);
+    EXPECT_EQ(TR_PRI_NORMAL, tr_torrentGetPriority(tor));
+
     tr_torrentRemove(tor, false, nullptr, nullptr);
 }
 
