@@ -573,15 +573,22 @@ size_t tr_peerIo::get_write_buffer_space(uint64_t now) const noexcept
 
 void tr_peerIo::write(libtransmission::Buffer& buf, bool is_piece_data)
 {
+    auto const was_empty = std::empty(outbuf_);
     auto [bytes, len] = buf.pullup();
     encrypt(len, bytes);
     outbuf_info_.emplace_back(std::size(buf), is_piece_data);
     outbuf_.add(buf);
+
+    if (was_empty && !std::empty(outbuf_) && has_bandwidth_left(TR_UP))
+    {
+        set_enabled(TR_UP, true);
+    }
 }
 
 void tr_peerIo::write_bytes(void const* bytes, size_t n_bytes, bool is_piece_data)
 {
     auto const old_size = std::size(outbuf_);
+    auto const was_empty = old_size == 0U;
 
     outbuf_.reserve(old_size + n_bytes);
     outbuf_.add(bytes, n_bytes);
@@ -592,6 +599,11 @@ void tr_peerIo::write_bytes(void const* bytes, size_t n_bytes, bool is_piece_dat
     }
 
     outbuf_info_.emplace_back(n_bytes, is_piece_data);
+
+    if (was_empty && !std::empty(outbuf_) && has_bandwidth_left(TR_UP))
+    {
+        set_enabled(TR_UP, true);
+    }
 }
 
 // ---
