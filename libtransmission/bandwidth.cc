@@ -346,7 +346,11 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     // or (2) the next tr_bandwidth::allocate () call, when we start over again.
     for (auto const& io : refs)
     {
-        io->set_enabled(TR_UP, io->has_bandwidth_left(TR_UP));
+        auto const queued = io->queued_outgoing_bytes();
+        auto const has_queued_upload =
+            queued.piece_bytes > 0U || queued.protocol_bytes > 0U;
+
+        io->set_enabled(TR_UP, has_queued_upload && io->has_bandwidth_left(TR_UP));
         io->set_enabled(TR_DOWN, io->has_bandwidth_left(TR_DOWN));
     }
 }

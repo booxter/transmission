@@ -414,6 +414,7 @@ TEST_F(BandwidthTest, idleForcePeerDoesNotArmAsyncUploadSpillover)
 
     EXPECT_FALSE(session_->top_bandwidth_.isAsyncUploadPieceSpilloverBudgetEnforced());
     EXPECT_EQ(0U, session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft());
+    EXPECT_FALSE(force_io->is_write_polling_enabled());
 
     destroyIo(force_io, force_sock);
 }
