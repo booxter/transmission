@@ -85,6 +85,11 @@ tr_bandwidth::tr_bandwidth(tr_bandwidth* parent)
 
 namespace
 {
+// Value of 3000 bytes chosen so that when using µTP we'll send a full-size
+// frame right away and leave enough buffered data for the next frame to go
+// out in a timely manner.
+auto constexpr PhaseOneIncrement = size_t{ 3000 };
+
 namespace deparent_helpers
 {
 void remove_child(std::vector<tr_bandwidth*>& v, tr_bandwidth* remove_me) noexcept
@@ -181,15 +186,10 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
     {
         for (size_t i = 0; i < n_unfinished;)
         {
-            // Value of 3000 bytes chosen so that when using µTP we'll send a full-size
-            // frame right away and leave enough buffered data for the next frame to go
-            // out in a timely manner.
-            static auto constexpr Increment = size_t{ 3000 };
-
-            auto const bytes_used = peers[i]->flush(dir, Increment);
+            auto const bytes_used = peers[i]->flush(dir, PhaseOneIncrement);
             tr_logAddTrace(fmt::format("peer #{} of {} used {} bytes in this pass", i, n_unfinished, bytes_used));
 
-            if (bytes_used != Increment)
+            if (bytes_used != PhaseOneIncrement)
             {
                 // peer is done writing for now; move it to the end of the list
                 std::swap(peers[i], peers[n_unfinished - 1]);
@@ -199,6 +199,32 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
             {
                 ++i;
             }
+        }
+    }
+}
+
+void tr_bandwidth::phaseOneForce(std::vector<tr_peerIo*>& peers, tr_direction dir)
+{
+    // Give FORCE peers first crack at the sync upload pulse, and keep them in
+    // the force-only loop as long as they are still making forward progress.
+    tr_logAddTrace(fmt::format("{} force peers to go round-robin for {}", peers.size(), dir == TR_UP ? "upload" : "download"));
+
+    thread_local auto urbg = tr_urbg<size_t>{};
+    std::shuffle(std::begin(peers), std::end(peers), urbg);
+
+    for (size_t n_unfinished = std::size(peers); n_unfinished > 0U;)
+    {
+        auto const bytes_used = peers[0]->flush(dir, PhaseOneIncrement);
+        tr_logAddTrace(fmt::format("force peer of {} used {} bytes in this pass", n_unfinished, bytes_used));
+
+        if (bytes_used == 0U)
+        {
+            std::swap(peers[0], peers[n_unfinished - 1]);
+            --n_unfinished;
+        }
+        else if (n_unfinished > 1U)
+        {
+            std::rotate(std::begin(peers), std::next(std::begin(peers)), std::next(std::begin(peers), n_unfinished));
         }
     }
 }
@@ -245,14 +271,20 @@ void tr_bandwidth::allocate(unsigned int period_msec)
         }
     }
 
+    // Give FORCE uploads a dedicated first drain so already-queued FORCE
+    // demand gets as much of the sync upload phase as the current socket and
+    // bandwidth state allow before mixed-priority upload scheduling begins.
+    phaseOneForce(force, TR_UP);
+    phaseOne(force, TR_DOWN);
+
     // First phase of IO. Tries to distribute bandwidth fairly to keep faster
     // peers from starving the others. Loop through the peers, giving each a
     // small chunk of bandwidth. Keep looping until we run out of bandwidth
     // and/or peers that can use it
-    for (auto& peers : peer_arrays)
+    for (auto* peers : { &high, &normal, &low })
     {
-        phaseOne(peers, TR_UP);
-        phaseOne(peers, TR_DOWN);
+        phaseOne(*peers, TR_UP);
+        phaseOne(*peers, TR_DOWN);
     }
 
     auto queued_force_piece_bytes = size_t{};

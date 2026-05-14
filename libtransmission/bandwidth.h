@@ -294,6 +294,7 @@ private:
         tr_priority_t peer_priority);
 
     static void phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir);
+    static void phaseOneForce(std::vector<tr_peerIo*>& peers, tr_direction dir);
 
     void allocateBandwidth(
         tr_priority_t parent_priority,
