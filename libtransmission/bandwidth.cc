@@ -236,11 +236,16 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     // keep these peers alive for the scope of this function
     auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
 
-    auto peer_arrays = std::array<std::vector<tr_peerIo*>, 4>{};
-    auto& force = peer_arrays[0];
-    auto& high = peer_arrays[1];
-    auto& normal = peer_arrays[2];
-    auto& low = peer_arrays[3];
+    auto force = std::vector<tr_peerIo*>{};
+    auto unforced_upload_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
+    auto download_peer_arrays = std::array<std::vector<tr_peerIo*>, 3>{};
+    auto& unforced_upload_high = unforced_upload_arrays[0];
+    auto& unforced_upload_normal = unforced_upload_arrays[1];
+    auto& unforced_upload_low = unforced_upload_arrays[2];
+    auto& download_high = download_peer_arrays[0];
+    auto& download_normal = download_peer_arrays[1];
+    auto& download_low = download_peer_arrays[2];
+    auto const now = tr_time_msec();
 
     // allocateBandwidth () is a helper function with two purposes:
     // 1. allocate bandwidth to b and its subtree
@@ -256,19 +261,36 @@ void tr_bandwidth::allocate(unsigned int period_msec)
         {
         case TR_PRI_FORCE:
             force.push_back(io.get());
-            [[fallthrough]];
+            download_normal.push_back(io.get());
+            download_low.push_back(io.get());
+            break;
 
         case TR_PRI_HIGH:
-            high.push_back(io.get());
-            [[fallthrough]];
+            unforced_upload_high.push_back(io.get());
+            unforced_upload_normal.push_back(io.get());
+            unforced_upload_low.push_back(io.get());
+            download_high.push_back(io.get());
+            download_normal.push_back(io.get());
+            download_low.push_back(io.get());
+            break;
 
         case TR_PRI_NORMAL:
-            normal.push_back(io.get());
-            [[fallthrough]];
+            unforced_upload_normal.push_back(io.get());
+            unforced_upload_low.push_back(io.get());
+            download_normal.push_back(io.get());
+            download_low.push_back(io.get());
+            break;
 
         default:
-            low.push_back(io.get());
+            unforced_upload_low.push_back(io.get());
+            download_low.push_back(io.get());
         }
+    }
+
+    auto force_recent_up_bps = uint64_t{};
+    for (auto const* io : force)
+    {
+        force_recent_up_bps += io->get_piece_speed_bytes_per_second(now, TR_UP);
     }
 
     // Give FORCE uploads a dedicated first drain so already-queued FORCE
@@ -277,13 +299,8 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     phaseOneForce(force, TR_UP);
     phaseOne(force, TR_DOWN);
 
-    // First phase of IO. Tries to distribute bandwidth fairly to keep faster
-    // peers from starving the others. Loop through the peers, giving each a
-    // small chunk of bandwidth. Keep looping until we run out of bandwidth
-    // and/or peers that can use it
-    for (auto* peers : { &high, &normal, &low })
+    for (auto* peers : { &download_high, &download_normal, &download_low })
     {
-        phaseOne(*peers, TR_UP);
         phaseOne(*peers, TR_DOWN);
     }
 
@@ -293,9 +310,34 @@ void tr_bandwidth::allocate(unsigned int period_msec)
         queued_force_piece_bytes += io->queued_outgoing_bytes().piece_bytes;
     }
 
-    if (this->isLimited(TR_UP) && queued_force_piece_bytes > 0U)
+    auto const force_recent_up_pulse_bytes = size_t{ force_recent_up_bps * uint64_t{ period_msec } / 1000U };
+    auto const force_upload_pressure_bytes = std::max(queued_force_piece_bytes, force_recent_up_pulse_bytes);
+
+    auto reserved_force_upload_bytes = size_t{};
+    if (this->isLimited(TR_UP) && force_upload_pressure_bytes > 0U)
     {
-        setAsyncUploadPieceSpilloverBudget(this->band_[TR_UP].bytes_left_ * AsyncUploadSpilloverPercent / 100U);
+        reserved_force_upload_bytes = std::min(this->band_[TR_UP].bytes_left_, force_upload_pressure_bytes);
+        this->band_[TR_UP].bytes_left_ -= reserved_force_upload_bytes;
+    }
+
+    for (auto* peers : { &unforced_upload_high, &unforced_upload_normal, &unforced_upload_low })
+    {
+        phaseOne(*peers, TR_UP);
+    }
+
+    if (reserved_force_upload_bytes > 0U)
+    {
+        this->band_[TR_UP].bytes_left_ += reserved_force_upload_bytes;
+    }
+
+    if (this->isLimited(TR_UP) && force_upload_pressure_bytes > 0U)
+    {
+        auto const unforced_async_upload_spillover_budget =
+            this->band_[TR_UP].bytes_left_ > force_upload_pressure_bytes ?
+                this->band_[TR_UP].bytes_left_ - force_upload_pressure_bytes :
+                0U;
+        setAsyncUploadPieceSpilloverBudget(
+            unforced_async_upload_spillover_budget * AsyncUploadSpilloverPercent / 100U);
     }
 
     // Second phase of IO. To help us scale in high bandwidth situations,

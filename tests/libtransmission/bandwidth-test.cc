@@ -358,6 +358,33 @@ TEST_F(BandwidthTest, allocateArmsAsyncUploadSpilloverWhenForceStillHasQueuedUpl
     destroyIo(force_io, force_sock);
 }
 
+TEST_F(BandwidthTest, historicalForceUploadPressureReservesSyncBudgetFromHigh)
+{
+    setSinglePulseLimit(TR_UP);
+
+    auto [force_io, force_sock] = createIncomingIo();
+    auto [high_io, high_sock] = createIncomingIo();
+
+    auto force_stats = TransferStats{};
+    auto high_stats = TransferStats{};
+    force_io->set_callbacks(nullptr, didWriteCounter, nullptr, &force_stats);
+    high_io->set_callbacks(nullptr, didWriteCounter, nullptr, &high_stats);
+
+    force_io->bandwidth().setPriority(TR_PRI_FORCE);
+    high_io->bandwidth().setPriority(TR_PRI_HIGH);
+    high_io->write_bytes(std::array<char, BytesPerPulse>{}.data(), BytesPerPulse, true);
+
+    force_io->bandwidth().notifyBandwidthConsumed(TR_UP, BytesPerPulse * 4U, true, tr_time_msec());
+
+    allocateSinglePulse();
+    EXPECT_EQ(0U, force_stats.piece_bytes);
+    EXPECT_EQ(0U, high_stats.piece_bytes);
+    EXPECT_TRUE(session_->top_bandwidth_.isAsyncUploadPieceSpilloverBudgetEnforced());
+
+    destroyIo(force_io, force_sock);
+    destroyIo(high_io, high_sock);
+}
+
 TEST_F(BandwidthTest, asyncUploadSpilloverCapsHighPriorityPeerIoWrites)
 {
     auto [high_io, high_sock] = createIncomingIo();
