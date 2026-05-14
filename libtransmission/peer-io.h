@@ -133,6 +133,14 @@ public:
 
     size_t flush(tr_direction dir, size_t byte_limit);
 
+    struct QueuedOutgoingBytes
+    {
+        size_t piece_bytes = 0U;
+        size_t protocol_bytes = 0U;
+    };
+
+    [[nodiscard]] auto queued_outgoing_bytes() const noexcept -> QueuedOutgoingBytes;
+
     ///
 
     [[nodiscard]] auto has_bandwidth_left(tr_direction dir) const noexcept
@@ -316,6 +324,7 @@ private:
 
     size_t try_read(size_t max);
     size_t try_write(size_t max);
+    [[nodiscard]] size_t get_async_upload_write_limit(size_t max) const noexcept;
 
     // this is only public for testing purposes.
     // production code should use new_outgoing() or new_incoming()

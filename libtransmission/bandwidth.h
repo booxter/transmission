@@ -142,12 +142,23 @@ public:
     void setAsyncUploadPieceSpilloverBudget(size_t byte_count) noexcept
     {
         async_upload_piece_spillover_budget_left_ = byte_count;
-        enforce_async_upload_piece_spillover_budget_ = byte_count > 0U;
+        enforce_async_upload_piece_spillover_budget_ = true;
     }
 
     void clearAsyncUploadPieceSpilloverBudget() noexcept
     {
-        setAsyncUploadPieceSpilloverBudget(0U);
+        async_upload_piece_spillover_budget_left_ = 0U;
+        enforce_async_upload_piece_spillover_budget_ = false;
+    }
+
+    [[nodiscard]] constexpr bool isAsyncUploadPieceSpilloverBudgetEnforced() const noexcept
+    {
+        return enforce_async_upload_piece_spillover_budget_;
+    }
+
+    [[nodiscard]] constexpr size_t asyncUploadPieceSpilloverBudgetLeft() const noexcept
+    {
+        return async_upload_piece_spillover_budget_left_;
     }
 
     /** @brief Get the raw total of bytes read or sent by this bandwidth subtree. */

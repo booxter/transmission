@@ -205,6 +205,8 @@ void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
 
 void tr_bandwidth::allocate(unsigned int period_msec)
 {
+    static auto constexpr AsyncUploadSpilloverPercent = size_t{ 25U };
+
     // keep these peers alive for the scope of this function
     auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
 
@@ -217,6 +219,7 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     // allocateBandwidth () is a helper function with two purposes:
     // 1. allocate bandwidth to b and its subtree
     // 2. accumulate an array of all the peerIos from b and its subtree.
+    clearAsyncUploadPieceSpilloverBudget();
     this->allocateBandwidth(TR_PRI_LOW, period_msec, refs);
 
     for (auto const& io : refs)
@@ -250,6 +253,17 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     {
         phaseOne(peers, TR_UP);
         phaseOne(peers, TR_DOWN);
+    }
+
+    auto queued_force_piece_bytes = size_t{};
+    for (auto const* io : force)
+    {
+        queued_force_piece_bytes += io->queued_outgoing_bytes().piece_bytes;
+    }
+
+    if (this->isLimited(TR_UP) && queued_force_piece_bytes > 0U)
+    {
+        setAsyncUploadPieceSpilloverBudget(this->band_[TR_UP].bytes_left_ * AsyncUploadSpilloverPercent / 100U);
     }
 
     // Second phase of IO. To help us scale in high bandwidth situations,

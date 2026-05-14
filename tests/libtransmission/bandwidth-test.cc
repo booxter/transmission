@@ -5,6 +5,7 @@
 
 #include <array>
 #include <utility>
+#include <vector>
 
 #include <event2/util.h>
 
@@ -113,6 +114,7 @@ protected:
     static auto constexpr DefaultPeerPort = tr_port::fromHost(51413);
     static auto constexpr BytesPerPulse = size_t{ 3000 };
     static auto constexpr HalfPulseBytes = BytesPerPulse / 2U;
+    static auto constexpr QuarterPulseBytes = BytesPerPulse / 4U;
     static constexpr unsigned int PeriodMsec = 500U;
 
     tr_address const DefaultPeerAddr = *tr_address::from_string("127.0.0.1"sv);
@@ -146,6 +148,32 @@ protected:
             [this, promise]()
             {
                 session_->top_bandwidth_.allocate(PeriodMsec);
+                promise->set_value();
+            });
+
+        EXPECT_EQ(std::future_status::ready, future.wait_for(20s));
+    }
+
+    void flushUploads(std::vector<std::shared_ptr<tr_peerIo>> ios)
+    {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        auto shared_ios = std::make_shared<std::vector<std::shared_ptr<tr_peerIo>>>(std::move(ios));
+
+        session_->runInSessionThread(
+            [promise, shared_ios]()
+            {
+                for (auto const& io : *shared_ios)
+                {
+                    io->flush(TR_UP, SIZE_MAX);
+                }
+
+                for (auto const& io : *shared_ios)
+                {
+                    io->set_enabled(TR_UP, false);
+                    io->set_enabled(TR_DOWN, false);
+                }
+
                 promise->set_value();
             });
 
@@ -311,6 +339,56 @@ TEST_F(BandwidthTest, forceDownloadPeerCanConsumeEntirePulseAheadOfHigh)
 
     destroyIo(force_io, force_sock);
     destroyIo(high_io, high_sock);
+}
+
+TEST_F(BandwidthTest, allocateArmsAsyncUploadSpilloverWhenForceStillHasQueuedUpload)
+{
+    setSinglePulseLimit(TR_UP);
+
+    auto [force_io, force_sock] = createIncomingIo();
+    force_io->bandwidth().setPriority(TR_PRI_FORCE);
+    force_io->write_bytes(std::array<char, BytesPerPulse * 2U>{}.data(), BytesPerPulse * 2U, true);
+
+    allocateSinglePulse();
+
+    EXPECT_TRUE(session_->top_bandwidth_.isAsyncUploadPieceSpilloverBudgetEnforced());
+    EXPECT_EQ(0U, session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft());
+    EXPECT_EQ(BytesPerPulse, force_io->queued_outgoing_bytes().piece_bytes);
+
+    destroyIo(force_io, force_sock);
+}
+
+TEST_F(BandwidthTest, asyncUploadSpilloverCapsHighPriorityPeerIoWrites)
+{
+    auto [high_io, high_sock] = createIncomingIo();
+
+    auto high_stats = TransferStats{};
+    high_io->set_callbacks(nullptr, didWriteCounter, nullptr, &high_stats);
+    high_io->set_priority(TR_PRI_HIGH);
+    high_io->write_bytes(std::array<char, BytesPerPulse>{}.data(), BytesPerPulse, true);
+
+    session_->top_bandwidth_.setAsyncUploadPieceSpilloverBudget(QuarterPulseBytes);
+    flushUploads({ high_io });
+
+    EXPECT_EQ(QuarterPulseBytes, high_stats.piece_bytes);
+
+    destroyIo(high_io, high_sock);
+}
+
+TEST_F(BandwidthTest, idleForcePeerDoesNotArmAsyncUploadSpillover)
+{
+    setSinglePulseLimit(TR_UP);
+
+    auto [force_io, force_sock] = createIncomingIo();
+
+    force_io->bandwidth().setPriority(TR_PRI_FORCE);
+
+    allocateSinglePulse();
+
+    EXPECT_FALSE(session_->top_bandwidth_.isAsyncUploadPieceSpilloverBudgetEnforced());
+    EXPECT_EQ(0U, session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft());
+
+    destroyIo(force_io, force_sock);
 }
 
 } // namespace libtransmission::test
