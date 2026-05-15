@@ -33,6 +33,7 @@ public:
     virtual void on_can_write(tr_peerIo& io) = 0;
     virtual void on_outbuf_ready(tr_peerIo& io) = 0;
     virtual void on_utp_read(tr_peerIo& io, size_t bytes_transferred) = 0;
+    virtual void on_peer_cleared(tr_peerIo& io) = 0;
 
 protected:
     tr_bandwidth_scheduler() = default;

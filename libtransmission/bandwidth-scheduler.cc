@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef> // size_t
 #include <cstdint> // uint64_t
 #include <deque>
@@ -14,12 +15,13 @@
 #include <vector>
 
 #include "bandwidth-scheduler.h"
-
 #include "bandwidth.h"
 #include "crypto-utils.h"
 #include "peer-io.h"
 #include "session.h"
+#include "timer.h"
 #include "tr-assert.h"
+#include "utils.h"
 
 namespace
 {
@@ -74,6 +76,11 @@ public:
         io.execute_utp_read(bytes_transferred);
     }
 
+    void on_peer_cleared(tr_peerIo& io) override
+    {
+        static_cast<void>(io);
+    }
+
 private:
     tr_session& session_;
 };
@@ -87,51 +94,64 @@ private:
     using WriteQueues = std::array<std::deque<PeerRef>, 3>;
 
     static auto constexpr Increment = size_t{ 3000U };
+    static auto constexpr MaxItemsPerDrain = size_t{ 64U };
 
 public:
     explicit tr_strict_bandwidth_scheduler(tr_session& session)
         : session_{ session }
+        , continue_drain_timer_{ session.timerMaker().create([this]() { on_continue_drain(); }) }
     {
     }
 
     void on_pulse(uint64_t period_msec) override
     {
+        pulse_deadline_msec_ = tr_time_msec() + period_msec;
+
+        if (deferred_drain_scheduled_)
+        {
+            continue_drain_timer_->stop();
+            deferred_drain_scheduled_ = false;
+        }
+
         auto refs = std::vector<PeerRef>{};
         session_.top_bandwidth_.allocatePulse(period_msec, refs);
 
         seed_reads_from_pulse(refs);
-        drain_reads();
+        seed_writes_from_pulse(refs);
+        drain_queues();
 
         for (auto const& io : refs)
         {
             io->set_enabled(TR_DOWN, io->has_bandwidth_left(TR_DOWN));
         }
-
-        seed_writes_from_pulse(refs);
-        drain_writes();
     }
 
     void on_can_read(tr_peerIo& io) override
     {
         enqueue_read(io);
-        drain_reads();
+        drain_queues();
     }
 
     void on_can_write(tr_peerIo& io) override
     {
         enqueue_write(io);
-        drain_writes();
+        drain_queues();
     }
 
     void on_outbuf_ready(tr_peerIo& io) override
     {
         enqueue_write(io);
-        drain_writes();
+        drain_queues();
     }
 
     void on_utp_read(tr_peerIo& io, size_t bytes_transferred) override
     {
         io.execute_utp_read(bytes_transferred);
+    }
+
+    void on_peer_cleared(tr_peerIo& io) override
+    {
+        dequeue_peer(io);
     }
 
 private:
@@ -187,7 +207,7 @@ private:
 
     void enqueue_read(tr_peerIo& io)
     {
-        if (!io.is_utp() && io.has_bandwidth_left(TR_DOWN))
+        if (!io.is_cleared() && !io.is_utp() && io.has_bandwidth_left(TR_DOWN))
         {
             enqueue_read(io.shared_from_this());
         }
@@ -196,6 +216,7 @@ private:
     void enqueue_read(PeerRef io)
     {
         TR_ASSERT(io != nullptr);
+        TR_ASSERT(!io->is_cleared());
 
         if (!queued_reads_.emplace(io.get()).second)
         {
@@ -207,7 +228,7 @@ private:
 
     void enqueue_write(tr_peerIo& io)
     {
-        if (io.has_output_buffered() && io.has_bandwidth_left(TR_UP))
+        if (!io.is_cleared() && io.has_output_buffered() && io.has_bandwidth_left(TR_UP))
         {
             enqueue_write(io.shared_from_this());
         }
@@ -216,6 +237,7 @@ private:
     void enqueue_write(PeerRef io)
     {
         TR_ASSERT(io != nullptr);
+        TR_ASSERT(!io->is_cleared());
 
         if (!queued_writes_.emplace(io.get()).second)
         {
@@ -225,105 +247,158 @@ private:
         write_queues_[priority_index(io->priority())].push_back(std::move(io));
     }
 
-    [[nodiscard]] auto* next_read_queue() noexcept
+    [[nodiscard]] auto has_queued_work() const noexcept
     {
-        for (auto& queue : read_queues_)
-        {
-            if (!std::empty(queue))
-            {
-                return &queue;
-            }
-        }
-
-        return static_cast<std::deque<PeerRef>*>(nullptr);
+        return std::any_of(std::begin(read_queues_), std::end(read_queues_), [](auto const& queue) { return !std::empty(queue); }) ||
+            std::any_of(std::begin(write_queues_), std::end(write_queues_), [](auto const& queue) { return !std::empty(queue); });
     }
 
-    [[nodiscard]] auto* next_write_queue() noexcept
+    template<typename QueueContainer>
+    static void erase_peer_from_queues(QueueContainer& queues, tr_peerIo* raw)
     {
-        for (auto& queue : write_queues_)
+        for (auto& queue : queues)
         {
-            if (!std::empty(queue))
-            {
-                return &queue;
-            }
+            queue.erase(
+                std::remove_if(
+                    std::begin(queue),
+                    std::end(queue),
+                    [raw](auto const& io) { return io == nullptr || io.get() == raw; }),
+                std::end(queue));
         }
-
-        return static_cast<std::deque<PeerRef>*>(nullptr);
     }
 
-    void drain_reads()
+    [[nodiscard]] auto can_continue_this_pulse() const
     {
-        if (is_draining_reads_)
+        return pulse_deadline_msec_ == 0U || tr_time_msec() < pulse_deadline_msec_;
+    }
+
+    void stop_scheduled_wakeup()
+    {
+        if (deferred_drain_scheduled_)
+        {
+            continue_drain_timer_->stop();
+            deferred_drain_scheduled_ = false;
+        }
+    }
+
+    void dequeue_peer(tr_peerIo& io)
+    {
+        auto* const raw = &io;
+
+        queued_reads_.erase(raw);
+        queued_writes_.erase(raw);
+        erase_peer_from_queues(read_queues_, raw);
+        erase_peer_from_queues(write_queues_, raw);
+
+        if (!has_queued_work())
+        {
+            stop_scheduled_wakeup();
+        }
+    }
+
+    void on_continue_drain()
+    {
+        deferred_drain_scheduled_ = false;
+        drain_queues();
+    }
+
+    void schedule_deferred_drain()
+    {
+        if (deferred_drain_scheduled_ || !has_queued_work() || !can_continue_this_pulse())
         {
             return;
         }
 
-        is_draining_reads_ = true;
+        deferred_drain_scheduled_ = true;
+        continue_drain_timer_->startSingleShot(std::chrono::milliseconds::zero());
+    }
 
-        for (;;)
+    void drain_read(std::deque<PeerRef>& queue)
+    {
+        TR_ASSERT(queue.front() != nullptr);
+        TR_ASSERT(!queue.front()->is_cleared());
+
+        auto io = std::move(queue.front());
+        queue.pop_front();
+        queued_reads_.erase(io.get());
+
+        auto const bytes_read = io->flush(TR_DOWN, Increment);
+
+        if (bytes_read == Increment && io->has_bandwidth_left(TR_DOWN))
         {
-            auto* const queue = next_read_queue();
-            if (queue == nullptr)
+            enqueue_read(std::move(io));
+        }
+    }
+
+    void drain_write(std::deque<PeerRef>& queue)
+    {
+        TR_ASSERT(queue.front() != nullptr);
+        TR_ASSERT(!queue.front()->is_cleared());
+
+        auto io = std::move(queue.front());
+        queue.pop_front();
+        queued_writes_.erase(io.get());
+
+        [[maybe_unused]] auto const protocol_bytes = io->flush_outgoing_protocol_msgs();
+        auto const piece_bytes = io->flush(TR_UP, Increment);
+
+        if (piece_bytes == Increment && io->has_output_buffered() && io->has_bandwidth_left(TR_UP))
+        {
+            enqueue_write(std::move(io));
+        }
+    }
+
+    [[nodiscard]] auto drain_one_item() -> bool
+    {
+        for (size_t i = 0U; i < std::size(read_queues_); ++i)
+        {
+            if (!std::empty(read_queues_[i]))
             {
-                break;
+                drain_read(read_queues_[i]);
+                return true;
             }
 
-            auto io = std::move(queue->front());
-            queue->pop_front();
-            queued_reads_.erase(io.get());
-
-            auto const bytes_read = io->flush(TR_DOWN, Increment);
-
-            if (bytes_read == Increment && io->has_bandwidth_left(TR_DOWN))
+            if (!std::empty(write_queues_[i]))
             {
-                enqueue_read(std::move(io));
+                drain_write(write_queues_[i]);
+                return true;
             }
         }
 
-        is_draining_reads_ = false;
+        return false;
     }
 
-    void drain_writes()
+    void drain_queues()
     {
-        if (is_draining_writes_)
+        if (is_draining_)
         {
             return;
         }
 
-        is_draining_writes_ = true;
+        is_draining_ = true;
 
-        for (;;)
+        for (auto n_drained = size_t{ 0U }; n_drained < MaxItemsPerDrain && can_continue_this_pulse(); ++n_drained)
         {
-            auto* const queue = next_write_queue();
-            if (queue == nullptr)
+            if (!drain_one_item())
             {
                 break;
             }
-
-            auto io = std::move(queue->front());
-            queue->pop_front();
-            queued_writes_.erase(io.get());
-
-            [[maybe_unused]] auto const protocol_bytes = io->flush_outgoing_protocol_msgs();
-            auto const piece_bytes = io->flush(TR_UP, Increment);
-
-            if (piece_bytes == Increment && io->has_output_buffered() && io->has_bandwidth_left(TR_UP))
-            {
-                enqueue_write(std::move(io));
-            }
         }
 
-        is_draining_writes_ = false;
+        is_draining_ = false;
+        schedule_deferred_drain();
     }
 
 private:
     tr_session& session_;
+    std::unique_ptr<libtransmission::Timer> continue_drain_timer_;
     ReadQueues read_queues_ = {};
     WriteQueues write_queues_ = {};
     std::unordered_set<tr_peerIo*> queued_reads_;
     std::unordered_set<tr_peerIo*> queued_writes_;
-    bool is_draining_reads_ = false;
-    bool is_draining_writes_ = false;
+    uint64_t pulse_deadline_msec_ = 0U;
+    bool deferred_drain_scheduled_ = false;
+    bool is_draining_ = false;
 };
 
 } // namespace

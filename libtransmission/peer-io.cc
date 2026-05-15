@@ -212,9 +212,20 @@ void tr_peerIo::close()
 
 void tr_peerIo::clear()
 {
+    if (is_cleared_)
+    {
+        return;
+    }
+
+    is_cleared_ = true;
+    session_->bandwidthScheduler().on_peer_cleared(*this);
     clear_callbacks();
+    flush_outbuf_trigger_->stop();
     set_enabled(TR_UP, false);
     set_enabled(TR_DOWN, false);
+    outbuf_info_.clear();
+    outbuf_.clear();
+    inbuf_.clear();
     close();
 }
 
@@ -289,6 +300,8 @@ size_t tr_peerIo::try_write(size_t max)
 {
     static auto constexpr Dir = TR_UP;
 
+    TR_ASSERT(!is_cleared_);
+
     if (max == 0)
     {
         return {};
@@ -330,6 +343,8 @@ size_t tr_peerIo::try_write(size_t max)
 
 void tr_peerIo::execute_can_write()
 {
+    TR_ASSERT(!is_cleared_);
+
     // Write as much as possible. Since the socket is non-blocking,
     // write() will return if it can't write any more without blocking.
     try_write(SIZE_MAX);
@@ -338,6 +353,12 @@ void tr_peerIo::execute_can_write()
 void tr_peerIo::event_write_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)
 {
     auto* const io = static_cast<tr_peerIo*>(vio);
+
+    if (io->is_cleared())
+    {
+        return;
+    }
+
     tr_logAddTraceIo(io, "libevent says this peer socket is ready for writing");
 
     TR_ASSERT(io->socket_.is_tcp());
@@ -420,6 +441,8 @@ size_t tr_peerIo::try_read(size_t max)
 {
     static auto constexpr Dir = TR_DOWN;
 
+    TR_ASSERT(!is_cleared_);
+
     if (max == 0)
     {
         return {};
@@ -459,6 +482,8 @@ size_t tr_peerIo::try_read(size_t max)
 
 void tr_peerIo::execute_can_read()
 {
+    TR_ASSERT(!is_cleared_);
+
     static auto constexpr MaxLen = RcvBuf;
 
     auto const n_used = std::size(inbuf_);
@@ -469,6 +494,12 @@ void tr_peerIo::execute_can_read()
 void tr_peerIo::event_read_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)
 {
     auto* const io = static_cast<tr_peerIo*>(vio);
+
+    if (io->is_cleared())
+    {
+        return;
+    }
+
     tr_logAddTraceIo(io, "libevent says this peer socket is ready for reading");
 
     TR_ASSERT(io->socket_.is_tcp());
@@ -593,6 +624,8 @@ void tr_peerIo::flush_outbuf_soon()
 
 void tr_peerIo::execute_outbuf_ready()
 {
+    TR_ASSERT(!is_cleared_);
+
     // https://github.com/transmission/transmission/issues/7307
     static auto constexpr MinPayloadSize = 128U;
 
@@ -688,6 +721,11 @@ void tr_peerIo::read_buffer_drain(size_t byte_count)
 
 void tr_peerIo::on_utp_state_change(int state)
 {
+    if (is_cleared_)
+    {
+        return;
+    }
+
     if (state == UTP_STATE_CONNECT)
     {
         tr_logAddTraceIo(this, "utp_on_state_change -- changed to connected");
@@ -754,6 +792,8 @@ void tr_peerIo::execute_utp_read(size_t bytes_transferred)
 {
     static_cast<void>(bytes_transferred);
 
+    TR_ASSERT(!is_cleared_);
+
     set_enabled(TR_DOWN, true);
     can_read_wrapper();
 }
@@ -777,6 +817,12 @@ void tr_peerIo::utp_init([[maybe_unused]] struct_utp_context* ctx)
                 // it alive for the duration of this code block. This can happen when
                 // a BT handshake did not complete successfully for example.
                 auto const keep_alive = io->shared_from_this();
+
+                if (io->is_cleared())
+                {
+                    utp_read_drained(args->socket);
+                    return 0;
+                }
 
                 io->inbuf_.add(args->buf, args->len);
                 io->session_->bandwidthScheduler().on_utp_read(*io, args->len);

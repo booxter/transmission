@@ -131,6 +131,11 @@ public:
         return outbuf_.size() != 0U;
     }
 
+    [[nodiscard]] constexpr auto is_cleared() const noexcept
+    {
+        return is_cleared_;
+    }
+
     // Write all the data from `buf`.
     // This is a destructive add: `buf` is empty after this call.
     void write(libtransmission::Buffer& buf, bool is_piece_data);
@@ -374,4 +379,5 @@ private:
     bool dht_supported_ = false;
     bool extended_protocol_supported_ = false;
     bool fast_extension_supported_ = false;
+    bool is_cleared_ = false;
 };

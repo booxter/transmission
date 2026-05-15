@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -40,6 +42,21 @@ namespace libtransmission::test
 class StrictBandwidthSchedulerTest : public SessionTest
 {
 protected:
+    template<typename Func>
+    void runInSessionThreadAndWait(Func&& func, std::chrono::milliseconds timeout = 200ms)
+    {
+        auto done = std::atomic_bool{ false };
+
+        session_->runInSessionThread(
+            [&, func = std::forward<Func>(func)]()
+            {
+                func();
+                done = true;
+            });
+
+        ASSERT_TRUE(waitFor([&]() { return done.load(); }, timeout));
+    }
+
     struct ReadCapture
     {
         std::string_view expected;
@@ -151,7 +168,7 @@ TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityWritersFirst)
     auto const high_payload = std::string(PayloadSize, 'H');
     auto const low_payload = std::string(PayloadSize, 'L');
 
-    session_->runInSessionThread(
+    runInSessionThreadAndWait(
         [&]()
         {
             session_->top_bandwidth_.setLimited(TR_UP, true);
@@ -176,6 +193,13 @@ TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityWritersFirst)
             return high_received == high_payload && low_received.empty();
         },
         200));
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            high_io->clear();
+            low_io->clear();
+        });
 
     tr_net_close_socket(high_sock);
     tr_net_close_socket(low_sock);
@@ -216,21 +240,19 @@ TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityReadersFirst)
     ASSERT_TRUE(writeAll(high_sock, high_payload));
     ASSERT_TRUE(writeAll(low_sock, low_payload));
 
-    session_->runInSessionThread(
-        [&]()
-        {
-            session_->bandwidthScheduler().on_pulse(PulseMsec);
-        });
+    runInSessionThreadAndWait([&]() { session_->bandwidthScheduler().on_pulse(PulseMsec); });
 
     EXPECT_TRUE(waitFor([&]() { return high_capture.bytes + low_capture.bytes != 0U; }, 200));
 
-    session_->runInSessionThread(
+    runInSessionThreadAndWait(
         [&]()
         {
             high_io->set_enabled(TR_DOWN, false);
             low_io->set_enabled(TR_DOWN, false);
             high_io->clear_callbacks();
             low_io->clear_callbacks();
+            high_io->clear();
+            low_io->clear();
         });
 
     EXPECT_EQ(PayloadSize, high_capture.bytes);
