@@ -161,6 +161,11 @@ public:
         return dir == tr_direction::Down ? try_read(byte_limit) : try_write(byte_limit);
     }
 
+    void execute_can_read();
+    void execute_can_write();
+    void execute_outbuf_ready();
+    void execute_utp_read(size_t bytes_transferred);
+
     ///
 
     [[nodiscard]] auto has_bandwidth_left(tr_direction dir) const noexcept

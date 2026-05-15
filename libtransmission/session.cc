@@ -32,6 +32,7 @@
 #include "libtransmission/transmission.h"
 
 #include "libtransmission/api-compat.h"
+#include "libtransmission/bandwidth-scheduler.h"
 #include "libtransmission/bandwidth.h"
 #include "libtransmission/blocklist.h"
 #include "libtransmission/crypto-utils.h"
@@ -790,6 +791,12 @@ void tr_session::setSettings(tr_session::Settings&& settings_in, bool force)
     auto const& old_settings = settings_in;
 
     // the rest of the func is session_ responding to settings changes
+
+    if (force || bandwidth_scheduler_ == nullptr ||
+        new_settings.bandwidth_allocator_mode != old_settings.bandwidth_allocator_mode)
+    {
+        bandwidth_scheduler_ = tr_bandwidth_scheduler::create(*this);
+    }
 
     if (auto const& val = new_settings.log_level; force || val != old_settings.log_level)
     {

@@ -32,6 +32,8 @@ target_sources(${TR_NAME}
         local-data.h
         api-compat.cc
         api-compat.h
+        bandwidth-scheduler.cc
+        bandwidth-scheduler.h
         bandwidth.cc
         bandwidth.h
         benc.h

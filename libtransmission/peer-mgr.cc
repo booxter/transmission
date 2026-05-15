@@ -29,6 +29,7 @@
 
 #define LIBTRANSMISSION_PEER_MODULE
 #include "libtransmission/announcer.h"
+#include "libtransmission/bandwidth-scheduler.h"
 #include "libtransmission/block-info.h" // tr_block_info
 #include "libtransmission/clients.h"
 #include "libtransmission/crypto-utils.h"
@@ -2389,7 +2390,7 @@ void tr_peerMgr::bandwidth_pulse()
 
     // allocate bandwidth to the peers
     static auto constexpr Msec = std::chrono::duration_cast<std::chrono::milliseconds>(BandwidthTimerPeriod).count();
-    session->top_bandwidth_.allocate(Msec);
+    session->bandwidthScheduler().on_pulse(Msec);
 
     // torrent upkeep
     for (auto* const tor : torrents_)

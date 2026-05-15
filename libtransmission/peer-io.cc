@@ -22,6 +22,7 @@
 
 #include <fmt/format.h>
 
+#include "libtransmission/bandwidth-scheduler.h"
 #include "libtransmission/bandwidth.h"
 #include "libtransmission/block-info.h" // tr_block_info
 #include "libtransmission/error.h"
@@ -109,15 +110,9 @@ std::shared_ptr<tr_peerIo> tr_peerIo::create(
     io->flush_outbuf_trigger_->set_callback(
         [weak = io->weak_from_this()]
         {
-            // https://github.com/transmission/transmission/issues/7307
-            static auto constexpr MinPayloadSize = 128U;
-
             if (auto const ptr = weak.lock())
             {
-                if (ptr->outbuf_.size() >= MinPayloadSize)
-                {
-                    ptr->try_write(SIZE_MAX);
-                }
+                ptr->session_->bandwidthScheduler().on_outbuf_ready(*ptr);
             }
         });
     tr_logAddTraceIo(io, fmt::format("bandwidth is {}; its parent is {}", fmt::ptr(&io->bandwidth()), fmt::ptr(parent)));
@@ -350,6 +345,13 @@ size_t tr_peerIo::try_write(size_t max)
     return n_written;
 }
 
+void tr_peerIo::execute_can_write()
+{
+    // Write as much as possible. Since the socket is non-blocking,
+    // write() will return if it can't write any more without blocking.
+    try_write(SIZE_MAX);
+}
+
 void tr_peerIo::event_write_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)
 {
     auto* const io = static_cast<tr_peerIo*>(vio);
@@ -359,10 +361,7 @@ void tr_peerIo::event_write_cb([[maybe_unused]] evutil_socket_t fd, short /*even
     TR_ASSERT(io->socket_.handle.tcp == fd);
 
     io->pending_events_ &= ~EV_WRITE;
-
-    // Write as much as possible. Since the socket is non-blocking,
-    // write() will return if it can't write any more without blocking
-    io->try_write(SIZE_MAX);
+    io->session_->bandwidthScheduler().on_can_write(*io);
 }
 
 // ---
@@ -473,10 +472,17 @@ size_t tr_peerIo::try_read(size_t max)
     return n_read;
 }
 
-void tr_peerIo::event_read_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)
+void tr_peerIo::execute_can_read()
 {
     static auto constexpr MaxLen = RcvBuf;
 
+    auto const n_used = std::size(inbuf_);
+    auto const n_left = n_used >= MaxLen ? 0U : MaxLen - n_used;
+    try_read(n_left);
+}
+
+void tr_peerIo::event_read_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)
+{
     auto* const io = static_cast<tr_peerIo*>(vio);
     tr_logAddTraceIo(io, "libevent says this peer socket is ready for reading");
 
@@ -484,11 +490,7 @@ void tr_peerIo::event_read_cb([[maybe_unused]] evutil_socket_t fd, short /*event
     TR_ASSERT(io->socket_.handle.tcp == fd);
 
     io->pending_events_ &= ~EV_READ;
-
-    // if we don't have any bandwidth left, stop reading
-    auto const n_used = std::size(io->inbuf_);
-    auto const n_left = n_used >= MaxLen ? 0U : MaxLen - n_used;
-    io->try_read(n_left);
+    io->session_->bandwidthScheduler().on_can_read(*io);
 }
 
 // ---
@@ -593,6 +595,17 @@ size_t tr_peerIo::flush_outgoing_protocol_msgs()
 void tr_peerIo::flush_outbuf_soon()
 {
     flush_outbuf_trigger_->start_single_shot(std::chrono::milliseconds::zero());
+}
+
+void tr_peerIo::execute_outbuf_ready()
+{
+    // https://github.com/transmission/transmission/issues/7307
+    static auto constexpr MinPayloadSize = 128U;
+
+    if (outbuf_.size() >= MinPayloadSize)
+    {
+        try_write(SIZE_MAX);
+    }
 }
 
 void tr_peerIo::write_bytes(void const* bytes, size_t n_bytes, bool is_piece_data)
@@ -729,6 +742,12 @@ void tr_peerIo::on_utp_error(int errcode)
 
 #endif /* #ifdef WITH_UTP */
 
+void tr_peerIo::execute_utp_read(size_t bytes_transferred)
+{
+    set_enabled(tr_direction::Down, true);
+    can_read_wrapper(bytes_transferred);
+}
+
 void tr_peerIo::utp_init([[maybe_unused]] struct_utp_context* ctx)
 {
 #ifdef WITH_UTP
@@ -750,8 +769,7 @@ void tr_peerIo::utp_init([[maybe_unused]] struct_utp_context* ctx)
                 auto const keep_alive = io->shared_from_this();
 
                 io->inbuf_.add(args->buf, args->len);
-                io->set_enabled(tr_direction::Down, true);
-                io->can_read_wrapper(args->len);
+                io->session_->bandwidthScheduler().on_utp_read(*io, args->len);
 
                 // utp_read_drained() notifies libutp that we read a packet from them.
                 // It opens up the congestion window by sending an ACK (soonish) if
