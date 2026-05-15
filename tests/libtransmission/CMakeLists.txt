@@ -11,6 +11,7 @@ target_sources(libtransmission-test
         bitfield-test.cc
         block-info-test.cc
         blocklist-test.cc
+        bandwidth-scheduler-test.cc
         buffer-test.cc
         clients-test.cc
         completion-test.cc

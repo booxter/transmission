@@ -699,7 +699,8 @@ void tr_peerIo::on_utp_state_change(int state)
 
         if ((pending_events_ & EV_WRITE) != 0)
         {
-            try_write(SIZE_MAX);
+            pending_events_ &= ~EV_WRITE;
+            session_->bandwidthScheduler().on_can_write(*this);
         }
     }
     else if (state == UTP_STATE_EOF)
