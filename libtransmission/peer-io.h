@@ -144,6 +144,11 @@ public:
 
     void write_bytes(void const* bytes, size_t n_bytes, bool is_piece_data);
 
+    [[nodiscard]] auto has_output_buffered() const noexcept
+    {
+        return outbuf_.size() != 0U;
+    }
+
     // Write all the data from `buf`.
     // This is a destructive add: `buf` is empty after this call.
     template<typename T>

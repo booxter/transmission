@@ -126,6 +126,12 @@ public:
      */
     void allocate(uint64_t period_msec);
 
+    /**
+     * @brief refill the next `period_msec`'s worth of quota and collect peers
+     * in this subtree.
+     */
+    void allocate_pulse(uint64_t period_msec, std::vector<std::shared_ptr<tr_peerIo>>& peer_pool);
+
     void set_parent(tr_bandwidth* new_parent);
 
     [[nodiscard]] constexpr auto get_priority() const noexcept
@@ -264,7 +270,7 @@ private:
 
     static void phase_one(std::vector<tr_peerIo*>& peers, tr_direction dir);
 
-    void allocate_bandwidth(
+    void allocate_pulse_impl(
         tr_priority_t parent_priority,
         uint64_t period_msec,
         std::vector<std::shared_ptr<tr_peerIo>>& peer_pool);

@@ -143,7 +143,7 @@ void tr_bandwidth::set_parent(tr_bandwidth* new_parent)
 
 // ---
 
-void tr_bandwidth::allocate_bandwidth(
+void tr_bandwidth::allocate_pulse_impl(
     tr_priority_t parent_priority,
     uint64_t period_msec,
     std::vector<std::shared_ptr<tr_peerIo>>& peer_pool)
@@ -171,8 +171,13 @@ void tr_bandwidth::allocate_bandwidth(
     // traverse & repeat for the subtree
     for (auto* child : children_)
     {
-        child->allocate_bandwidth(priority, period_msec, peer_pool);
+        child->allocate_pulse_impl(priority, period_msec, peer_pool);
     }
+}
+
+void tr_bandwidth::allocate_pulse(uint64_t period_msec, std::vector<std::shared_ptr<tr_peerIo>>& peer_pool)
+{
+    allocate_pulse_impl(std::numeric_limits<tr_priority_t>::max(), period_msec, peer_pool);
 }
 
 void tr_bandwidth::phase_one(std::vector<tr_peerIo*>& peers, tr_direction dir)
@@ -227,7 +232,7 @@ void tr_bandwidth::allocate(uint64_t period_msec)
     // allocateBandwidth () is a helper function with two purposes:
     // 1. allocate bandwidth to b and its subtree
     // 2. accumulate an array of all the peerIos from b and its subtree.
-    allocate_bandwidth(std::numeric_limits<tr_priority_t>::max(), period_msec, refs);
+    allocate_pulse(period_msec, refs);
 
     for (auto const& io : refs)
     {
