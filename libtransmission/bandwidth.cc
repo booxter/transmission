@@ -254,7 +254,7 @@ void tr_bandwidth::phaseOneForce(std::vector<tr_peerIo*>& peers, tr_direction di
 
 void tr_bandwidth::allocate(unsigned int period_msec)
 {
-    static auto constexpr AsyncUploadSpilloverPercent = size_t{ 100U };
+    static auto constexpr AsyncUploadSpilloverPercent = size_t{ 25U };
     static auto constexpr ForceUploadPressureReserveMultiplier = size_t{ 4U };
 
     // keep these peers alive for the scope of this function

@@ -118,6 +118,8 @@ protected:
     static auto constexpr LateBorrowBytes = BytesPerPulse / 5U;
     static auto constexpr BootstrapReservePercent = size_t{ 20U };
     static auto constexpr UnforcedBytesAfterBootstrap = BytesPerPulse * (100U - BootstrapReservePercent) / 100U;
+    static auto constexpr AsyncSpilloverPercent = size_t{ 25U };
+    static auto constexpr AsyncSpilloverBytesAfterBootstrap = UnforcedBytesAfterBootstrap * AsyncSpilloverPercent / 100U;
     static constexpr unsigned int PeriodMsec = 500U;
 
     tr_address const DefaultPeerAddr = *tr_address::from_string("127.0.0.1"sv);
@@ -562,7 +564,7 @@ TEST_F(BandwidthTest, coldForcePeerArmsBootstrapSpilloverFloor)
     allocateSinglePulse();
 
     EXPECT_TRUE(session_->top_bandwidth_.isAsyncUploadPieceSpilloverBudgetEnforced());
-    EXPECT_EQ(UnforcedBytesAfterBootstrap, session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft());
+    EXPECT_EQ(AsyncSpilloverBytesAfterBootstrap, session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft());
     EXPECT_FALSE(force_io->is_write_polling_enabled());
 
     destroyIo(force_io, force_sock);
