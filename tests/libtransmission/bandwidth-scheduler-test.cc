@@ -4,6 +4,7 @@
 // License text can be found in the licenses/ folder.
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <string>
@@ -43,6 +44,12 @@ namespace tr::test
 class StrictBandwidthSchedulerTest : public SessionTest
 {
 protected:
+    static ReadState keepReadsBuffered([[maybe_unused]] tr_peerIo* io, [[maybe_unused]] void* user_data, size_t* piece)
+    {
+        *piece = 0U;
+        return ReadState::Later;
+    }
+
     void SetUp() override
     {
         auto* const settings_map = settings()->get_if<tr_variant::Map>();
@@ -90,6 +97,26 @@ protected:
 
         return payload;
     }
+
+    static bool writeAll(tr_socket_t sock, std::string_view payload)
+    {
+        auto const* walk = std::data(payload);
+        auto n_left = std::size(payload);
+
+        while (n_left > 0U)
+        {
+            auto const n_written = send(sock, walk, n_left, 0);
+            if (n_written <= 0)
+            {
+                return false;
+            }
+
+            walk += n_written;
+            n_left -= static_cast<size_t>(n_written);
+        }
+
+        return true;
+    }
 };
 
 TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityWritersFirst)
@@ -135,6 +162,64 @@ TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityWritersFirst)
             return high_received == high_payload && low_received.empty();
         },
         200));
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityReadersFirst)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.set_priority(TR_PRI_HIGH);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.set_priority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+
+    static auto constexpr DownloadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const high_payload = std::string(PayloadSize, 'H');
+    auto const low_payload = std::string(PayloadSize, 'L');
+    auto done = std::atomic_bool{ false };
+    auto write_ok = std::atomic_bool{ true };
+    auto high_size = std::atomic_size_t{ 0U };
+    auto low_size = std::atomic_size_t{ 0U };
+    auto high_matches = std::atomic_bool{ false };
+
+    session_->queue_session_thread(
+        [&]()
+        {
+            session_->top_bandwidth_.set_limited(tr_direction::Down, true);
+            session_->top_bandwidth_.set_desired_speed(
+                tr_direction::Down,
+                tr::Values::Speed{ DownloadBytesPerSecond, tr::Values::Speed::Units::Byps });
+
+            high_io->set_callbacks(&keepReadsBuffered, nullptr, nullptr, nullptr);
+            low_io->set_callbacks(&keepReadsBuffered, nullptr, nullptr, nullptr);
+
+            write_ok = writeAll(high_sock, high_payload) && writeAll(low_sock, low_payload);
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            high_size = high_io->read_buffer_size();
+            low_size = low_io->read_buffer_size();
+            high_matches = high_io->read_buffer_starts_with(high_payload);
+
+            high_io->set_enabled(tr_direction::Down, false);
+            low_io->set_enabled(tr_direction::Down, false);
+            high_io->clear_callbacks();
+            low_io->clear_callbacks();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_TRUE(write_ok.load());
+    EXPECT_EQ(PayloadSize, high_size.load());
+    EXPECT_TRUE(high_matches.load());
+    EXPECT_EQ(0U, low_size.load());
 
     tr_net_close_socket(high_sock);
     tr_net_close_socket(low_sock);
