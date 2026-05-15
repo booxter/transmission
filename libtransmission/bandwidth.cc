@@ -91,7 +91,7 @@ namespace
 // out in a timely manner.
 auto constexpr PhaseOneIncrement = size_t{ 3000 };
 auto constexpr LateAsyncBorrowPercent = size_t{ 20U };
-auto constexpr ForceBootstrapReservePercent = size_t{ 5U };
+auto constexpr ForceBootstrapReservePercent = size_t{ 20U };
 
 [[nodiscard]] size_t saturatingMultiply(size_t value, size_t multiplier) noexcept
 {

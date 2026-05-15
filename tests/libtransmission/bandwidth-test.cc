@@ -116,6 +116,8 @@ protected:
     static auto constexpr HalfPulseBytes = BytesPerPulse / 2U;
     static auto constexpr QuarterPulseBytes = BytesPerPulse / 4U;
     static auto constexpr LateBorrowBytes = BytesPerPulse / 5U;
+    static auto constexpr BootstrapReservePercent = size_t{ 20U };
+    static auto constexpr UnforcedBytesAfterBootstrap = BytesPerPulse * (100U - BootstrapReservePercent) / 100U;
     static constexpr unsigned int PeriodMsec = 500U;
 
     tr_address const DefaultPeerAddr = *tr_address::from_string("127.0.0.1"sv);
@@ -266,7 +268,7 @@ protected:
     }
 };
 
-TEST_F(BandwidthTest, forceUploadPeerUsesRemainingPulseBandwidthAheadOfHigh)
+TEST_F(BandwidthTest, forceUploadPeerKeepsBootstrapRunwayFromHigh)
 {
     setSinglePulseLimit(TR_UP);
 
@@ -283,10 +285,39 @@ TEST_F(BandwidthTest, forceUploadPeerUsesRemainingPulseBandwidthAheadOfHigh)
     force_io->write_bytes(std::array<char, HalfPulseBytes>{}.data(), HalfPulseBytes, true);
     high_io->write_bytes(std::array<char, BytesPerPulse>{}.data(), BytesPerPulse, true);
 
-    allocateSinglePulse();
-    EXPECT_EQ(HalfPulseBytes, force_stats.piece_bytes);
-    EXPECT_EQ(QuarterPulseBytes, high_stats.piece_bytes);
-    EXPECT_EQ(HalfPulseBytes + QuarterPulseBytes, force_stats.piece_bytes + high_stats.piece_bytes);
+    struct Snapshot
+    {
+        size_t force_piece_bytes = 0U;
+        size_t high_piece_bytes = 0U;
+    };
+
+    auto promise = std::make_shared<std::promise<Snapshot>>();
+    auto future = promise->get_future();
+    auto force_io_copy = force_io;
+    auto high_io_copy = high_io;
+
+    session_->runInSessionThread(
+        [this, promise, force_io_copy, high_io_copy, &force_stats, &high_stats]()
+        {
+            session_->top_bandwidth_.allocate(PeriodMsec);
+
+            auto snapshot = Snapshot{};
+            snapshot.force_piece_bytes = force_stats.piece_bytes;
+            snapshot.high_piece_bytes = high_stats.piece_bytes;
+
+            force_io_copy->set_enabled(TR_UP, false);
+            force_io_copy->set_enabled(TR_DOWN, false);
+            high_io_copy->set_enabled(TR_UP, false);
+            high_io_copy->set_enabled(TR_DOWN, false);
+
+            promise->set_value(snapshot);
+        });
+
+    ASSERT_EQ(std::future_status::ready, future.wait_for(20s));
+    auto const snapshot = future.get();
+    EXPECT_EQ(HalfPulseBytes, snapshot.force_piece_bytes);
+    EXPECT_EQ(UnforcedBytesAfterBootstrap - HalfPulseBytes, snapshot.high_piece_bytes);
+    EXPECT_EQ(UnforcedBytesAfterBootstrap, snapshot.force_piece_bytes + snapshot.high_piece_bytes);
 
     destroyIo(force_io, force_sock);
     destroyIo(high_io, high_sock);
@@ -496,7 +527,7 @@ TEST_F(BandwidthTest, coldForcePeerReservesBootstrapRunwayFromHigh)
     ASSERT_EQ(std::future_status::ready, future.wait_for(20s));
     auto const snapshot = future.get();
     EXPECT_EQ(0U, snapshot.force_piece_bytes);
-    EXPECT_EQ(BytesPerPulse * 95U / 100U, snapshot.high_piece_bytes);
+    EXPECT_EQ(UnforcedBytesAfterBootstrap, snapshot.high_piece_bytes);
     EXPECT_TRUE(snapshot.spillover_enforced);
 
     destroyIo(force_io, force_sock);
@@ -531,7 +562,7 @@ TEST_F(BandwidthTest, coldForcePeerArmsBootstrapSpilloverFloor)
     allocateSinglePulse();
 
     EXPECT_TRUE(session_->top_bandwidth_.isAsyncUploadPieceSpilloverBudgetEnforced());
-    EXPECT_EQ(BytesPerPulse * 95U / 100U, session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft());
+    EXPECT_EQ(UnforcedBytesAfterBootstrap, session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft());
     EXPECT_FALSE(force_io->is_write_polling_enabled());
 
     destroyIo(force_io, force_sock);
