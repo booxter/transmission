@@ -25,6 +25,8 @@ target_sources(${TR_NAME}
         announcer-udp.cc
         announcer.cc
         announcer.h
+        bandwidth-scheduler.cc
+        bandwidth-scheduler.h
         bandwidth.cc
         bandwidth.h
         benc.h

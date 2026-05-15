@@ -21,6 +21,7 @@
 #include "net.h" // tr_address
 #include "peer-mse.h"
 #include "peer-socket.h"
+#include "timer.h"
 #include "tr-buffer.h"
 #include "utils-ev.h"
 
@@ -132,6 +133,11 @@ public:
     size_t flush_outgoing_protocol_msgs();
 
     size_t flush(tr_direction dir, size_t byte_limit);
+
+    void execute_can_read();
+    void execute_can_write();
+    void execute_outbuf_ready();
+    void execute_utp_read(size_t bytes_transferred);
 
     ///
 
@@ -313,6 +319,7 @@ private:
 
     void can_read_wrapper();
     void did_write_wrapper(size_t bytes_transferred);
+    void flush_outbuf_soon();
 
     size_t try_read(size_t max);
     size_t try_write(size_t max);
@@ -345,6 +352,8 @@ private:
     DidWrite did_write_ = nullptr;
     GotError got_error_ = nullptr;
     void* user_data_ = nullptr;
+
+    std::unique_ptr<libtransmission::Timer> const flush_outbuf_trigger_;
 
     libtransmission::evhelpers::event_unique_ptr event_read_;
     libtransmission::evhelpers::event_unique_ptr event_write_;

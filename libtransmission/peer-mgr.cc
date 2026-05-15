@@ -26,6 +26,7 @@
 #include "transmission.h"
 
 #include "announcer.h"
+#include "bandwidth-scheduler.h"
 #include "bandwidth.h"
 #include "blocklist.h"
 #include "cache.h"
@@ -2228,7 +2229,7 @@ void tr_peerMgr::bandwidthPulse()
 
     // allocate bandwidth to the peers
     static auto constexpr Msec = std::chrono::duration_cast<std::chrono::milliseconds>(BandwidthPeriod).count();
-    session->top_bandwidth_.allocate(Msec);
+    session->bandwidthScheduler().on_pulse(Msec);
 
     // torrent upkeep
     for (auto* const tor : session->torrents())

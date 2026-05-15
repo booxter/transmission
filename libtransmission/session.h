@@ -53,8 +53,8 @@
 tr_peer_id_t tr_peerIdInit();
 
 struct event_base;
-
 class tr_lpd;
+class tr_bandwidth_scheduler;
 class tr_peer_socket;
 class tr_port_forwarding;
 class tr_rpc_server;
@@ -318,6 +318,12 @@ public:
     [[nodiscard]] libtransmission::TimerMaker& timerMaker() noexcept
     {
         return *timer_maker_;
+    }
+
+    [[nodiscard]] tr_bandwidth_scheduler& bandwidthScheduler() noexcept
+    {
+        TR_ASSERT(bandwidth_scheduler_ != nullptr);
+        return *bandwidth_scheduler_;
     }
 
     [[nodiscard]] auto amInSessionThread() const noexcept
@@ -1093,6 +1099,9 @@ public:
 private:
     // depends-on: top_bandwidth_
     std::vector<std::pair<tr_interned_string, std::unique_ptr<tr_bandwidth>>> bandwidth_groups_;
+
+    // depends-on: top_bandwidth_, settings_
+    std::unique_ptr<tr_bandwidth_scheduler> bandwidth_scheduler_;
 
     // depends-on: timer_maker_, settings_, local_peer_port_
     PortForwardingMediator port_forwarding_mediator_{ *this };
