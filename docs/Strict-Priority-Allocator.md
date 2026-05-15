@@ -1,0 +1,541 @@
+# Strict Priority Allocator
+
+Status: draft
+
+Last updated: 2026-05-15
+
+## Purpose
+
+This document captures the goal and working design direction for a new bandwidth allocator implementation in Transmission.
+
+The document is intended to be a living memory for the work. It should describe the intended behavior, constraints, and implementation direction clearly enough that future refinements do not lose the original motivation.
+
+## Background
+
+Transmission's current allocator gives priorities extra weight during an initial allocation pass, but it does not enforce strict priority once I/O continues through event-driven execution.
+
+Today, priority mainly affects scheduling during the initial pass by putting peers into fallthrough buckets:
+
+- `HIGH` peers participate in `HIGH`, `NORMAL`, and `LOW` passes.
+- `NORMAL` peers participate in `NORMAL` and `LOW` passes.
+- `LOW` peers participate only in `LOW` passes.
+
+That gives higher-priority peers more chances during the initial pass, but it is still a weighted fairness model, not a strict priority model.
+
+After that pass, peers that still have bandwidth left are re-enabled for event-driven I/O. At that point, priority is no longer strictly enforced. Any ready peer with remaining budget can make progress, regardless of whether higher-priority peers also have pending work.
+
+## Problem Statement
+
+The current design does not provide strict priority enforcement across the whole pulse.
+
+In particular:
+
+- `HIGH` priority work does not fully dominate `NORMAL` or `LOW` work.
+- `NORMAL` priority work does not fully dominate `LOW` work.
+- Once event-driven I/O begins, priority ordering effectively becomes opportunistic rather than enforced.
+- New high-priority work that appears after lower-priority work has already started does not immediately reclaim precedence.
+
+This means the current allocator can approximate priority, but it cannot guarantee it.
+
+## Goal
+
+Introduce a new allocator implementation that enforces strict priority ordering for peer I/O.
+
+The core rule is:
+
+- If any eligible `HIGH` priority work exists, it must be served before any `NORMAL` or `LOW` work.
+- If no `HIGH` work exists but eligible `NORMAL` work exists, it must be served before any `LOW` work.
+- `LOW` work should run only when neither `HIGH` nor `NORMAL` work is eligible.
+
+Within each priority class, fairness may still be preserved if needed.
+
+Strict priority must apply across the whole pulse, including both work discovered during the pulse and work that becomes runnable while the pulse is in progress.
+
+If new `HIGH` priority work appears while `NORMAL` or `LOW` work is being processed, the system should switch back to serving `HIGH` work before continuing with lower priorities.
+
+## Non-Goals
+
+The following are out of scope for the initial implementation:
+
+- changing the behavior of the existing allocator for users who do not opt into the new allocator
+- removing or rewriting the current allocator implementation
+- changing user-visible behavior by default
+- deciding every future policy detail up front before implementation starts
+
+This work should add a new allocator option, not replace the current one.
+
+## Compatibility Requirements
+
+- The current allocator must remain available.
+- The current allocator must remain the default unless explicitly changed later.
+- Users who do not select the new allocator must see no behavior change.
+- The implementation choice must be made at runtime through a configuration knob.
+- Any integration work required in shared code paths should be limited to what is necessary to support selecting between allocator implementations.
+
+## Implementation Discipline
+
+The implementation should land as a logically separated series of commits rather than one large change.
+
+The intent is:
+
+- each commit should have a focused purpose
+- each commit message should explain what changed and why
+- commit messages should be wrapped to a readable width rather than left as long unbroken lines
+- tests should be included with the commit that introduces or changes the tested behavior when practical
+- if a change is too intertwined to keep fully separate without breaking the tree, it is acceptable to lump the minimum necessary pieces together
+
+Every commit in the series should build successfully. Where practical, each commit should also pass the relevant tests for the behavior it introduces or changes.
+
+The bar for this work should be production quality:
+
+- do not overcomplicate the design unnecessarily
+- do not cut corners on validation or isolation
+- keep the legacy path stable
+- keep the strict path understandable enough to present upstream later
+
+## Allocator Selection
+
+Allocator selection should use a string configuration knob whose value is the allocator name.
+
+The canonical configuration key should be `bandwidth_allocator`.
+
+Required values:
+
+- unset: use the existing allocator
+- `default`: use the existing allocator
+- `strict`: use the new strict-priority allocator
+
+Invalid values should log a warning and fall back to `default`.
+
+For the initial implementation, this setting should be configuration-file only. It should not be exposed through RPC.
+
+Changing allocator mode should require a client restart. That is acceptable for this setting.
+
+This is intended to be the narrowest shared runtime interface:
+
+- one configuration value
+- one selected allocator or scheduler service used from pulse logic and peer I/O readiness or timer paths
+- two implementations behind that selection
+
+The existing allocator remains the baseline implementation behind the unset and `default` modes.
+
+## Behavioral Requirements
+
+The new allocator should satisfy the following requirements:
+
+1. Priority ordering must be strict, not weighted.
+2. Work conservation must still hold.
+   If no higher-priority work is available, lower-priority work should be allowed to run.
+3. Within a priority class, fairness should be maintained when practical.
+4. New higher-priority work must be visible to the scheduler quickly enough to preempt lower-priority work within the same pulse.
+5. The allocator must continue to respect bandwidth limits and accounting rules.
+6. The allocator must not require behavior changes from users who stay on the current mode.
+7. The strict scheduler must be time-aware enough to yield in time for the next pulse.
+
+## High-Level Design Direction
+
+### 1. Two allocator implementations
+
+Introduce a new allocator mode alongside the current one.
+
+At a high level:
+
+- current allocator: existing behavior, preserved as-is, selected by unset or `default`
+- strict priority allocator: new behavior, selected by `strict`
+
+The existing allocator should only be changed as needed to fit behind a shared selection mechanism.
+
+### 2. Pulse-driven scheduling model
+
+Transmission should keep its existing pulse-based framing.
+
+The strict allocator does not remove the pulse. Instead, the pulse remains the mechanism that:
+
+- refills bandwidth quota
+- lets peers generate protocol work
+- gives the scheduler a natural time budget
+
+Within a pulse, the strict allocator should process work in strict priority order:
+
+1. serve `HIGH`
+2. then serve `NORMAL`
+3. then serve `LOW`
+
+The important distinction from the current design is that the strict allocator should treat this as one continuous scheduling policy for the whole pulse, rather than an initial fairness pass followed by uncontrolled event-driven execution.
+
+The current code calls peer protocol maintenance before bandwidth allocation or draining during each pulse. The strict allocator should preserve that ordering initially unless there is a specific reason to change it.
+
+### 3. Unified scheduler drain loop
+
+The strict allocator should use one scheduler-owned drain loop for peer I/O work within each pulse.
+
+That loop should cover both directions of peer I/O:
+
+- readable peer I/O
+- writable peer I/O
+
+The loop should be fed by multiple sources of runnable work, including:
+
+- work made runnable by the pulse
+- readable socket readiness
+- writable socket readiness
+- immediate protocol-driven follow-up work generated while processing an item
+
+When a transport callback or timer callback indicates that a peer is writable or readable, the peer should not immediately consume bandwidth by performing I/O directly from the callback path.
+
+Instead:
+
+- the readiness should be converted into scheduler-visible work
+- that work should be inserted into a data structure managed by the strict priority allocator
+- allocator-owned execution logic should choose what to run next
+
+That execution logic should always prefer the highest priority class that currently has eligible work.
+
+Within a priority class, the scheduler may still use round-robin service.
+
+### 4. Time-aware yielding
+
+The strict scheduler must not monopolize the session thread indefinitely.
+
+It should remain aware of the pulse cadence and stop draining in time for the next pulse to run on schedule.
+
+The goal is:
+
+- keep the existing pulse-based framing intact
+- allow strict priority within a pulse
+- avoid letting one long drain loop delay the next pulse
+
+This means the strict scheduler should be bounded by time, not only by queue emptiness.
+
+## Event Handling Ownership
+
+Peer I/O readiness and timer callbacks should call into a scheduler abstraction rather than performing I/O policy inline.
+
+This is expected to be the main shared integration point between allocator implementations:
+
+- callbacks report readiness or runnable work to the selected scheduler
+- the selected scheduler decides what to do next
+
+Behavior by mode:
+
+- `default`: preserve current behavior, meaning the scheduler may execute I/O immediately in the callback path and otherwise behave as the current allocator does
+- `strict`: callbacks must not perform I/O directly; they hand readiness to the strict scheduler, which owns ordering and execution
+
+In `strict` mode, the scheduler should own the event enable/disable lifecycle for scheduled peer I/O work.
+
+That means the scheduler is responsible for:
+
+- accepting readiness notifications from event callbacks
+- deciding whether a `peer + direction` item is already queued
+- preventing duplicate runnable items from accumulating unnecessarily
+- deciding when queued work should execute
+- deciding when the underlying event should remain enabled, be temporarily suppressed, or be re-enabled after execution
+
+The purpose of this ownership rule is to prevent peer I/O from bypassing strict priority ordering through direct callback-path execution.
+
+In the current codebase, the relevant callback paths are broader than libevent socket callbacks alone. The strict scheduler needs to account for all of the following current direct-execution entry points:
+
+- TCP read readiness callbacks
+- TCP write readiness callbacks
+- uTP writable-state callbacks
+- uTP read callbacks
+- the zero-delay outbound flush timer callback
+
+### 5. Immediate visibility of new work
+
+The strict priority model only works if newly arrived higher-priority work becomes visible to the scheduler loop immediately, rather than waiting for the next pulse.
+
+That means:
+
+- if processing a peer causes new peer work to become runnable
+- or if a network event makes new work writable
+- or if a protocol event generates more outbound work
+
+then that work should be delivered to the strict priority scheduler quickly enough that the current pulse can react to it.
+
+The intended behavior is preemptive at priority boundaries:
+
+- lower-priority progress may pause
+- newly available higher-priority work takes precedence
+- lower-priority work resumes only when no higher-priority eligible work remains
+
+Work should also be considered runnable when it is already buffered locally, not only when new external readiness arrives. In practice this means the scheduler may need to requeue a `peer + direction` item after partial progress if:
+
+- the peer still has unread buffered input that can be processed without another read callback
+- the peer still has buffered output that can be written without waiting for another readiness notification
+
+### 6. Fairness within a priority class
+
+Strict priority across classes does not forbid fairness within a class.
+
+The strict priority allocator should use round-robin fairness within each priority class, matching the current model as closely as practical where it does not conflict with strict inter-class priority.
+
+In particular, the strict priority allocator should:
+
+- use round-robin within `HIGH`
+- use round-robin within `NORMAL`
+- use round-robin within `LOW`
+
+The key rule is that fairness must not weaken inter-class priority ordering.
+
+## Initial Implementation Shape
+
+The implementation is expected to require:
+
+- a runtime configuration knob that selects allocator mode
+- a top-level integration point in the pulse path that selects allocator behavior
+- a shared scheduler interface or dispatch point used by peer I/O callbacks
+- a strict-priority scheduler data structure for peer I/O work
+- execution logic that drains eligible work in strict priority order for both readable and writable work
+- time-aware yielding so the scheduler does not miss the next pulse
+- integration so that newly generated work can be surfaced to the scheduler in the same pulse
+
+The design should prefer isolating the new behavior behind the new allocator mode instead of scattering conditionals throughout the current allocator logic.
+
+## Work Item Representation
+
+For the first version, the scheduler should treat `peer + direction` as the runnable unit of work.
+
+That means:
+
+- a readable peer contributes a read-direction work item
+- a writable peer contributes a write-direction work item
+- the same peer may have distinct runnable items for different directions
+
+The scheduler item should still be represented as a struct rather than an ad hoc pair, so that additional metadata can be added later if needed without redesigning the scheduler interface.
+
+The intent is to keep the first version narrow:
+
+- start with `peer + direction`
+- do not expand the item shape unless there is a concrete reason
+- enrich the struct later only if implementation experience shows it is necessary
+
+## Codebase Constraints
+
+The current codebase introduces several concrete constraints that the implementation needs to respect.
+
+### 1. Multiple runnable-work entry points already exist
+
+Today, direct peer I/O execution is entered from several places, not one:
+
+- the bandwidth pulse and allocator path
+- TCP read and write readiness callbacks
+- uTP callbacks
+- the zero-delay outbound flush timer callback
+
+This means the scheduler seam cannot be limited to one callback site. The selected allocator or scheduler service must be reachable from all peer-I/O execution entry points that can currently consume bandwidth or make forward progress.
+
+### 2. Pulse ordering matters
+
+The current pulse first runs peer protocol maintenance and only then runs the bandwidth allocator. That maintenance can generate outbound work immediately.
+
+The strict allocator should preserve that order initially:
+
+1. peer pulse work runs
+2. bandwidth quota is refilled
+3. the strict scheduler drains runnable work
+
+### 3. Buffered local work is first-class runnable work
+
+The scheduler cannot define runnable work only in terms of external readiness notifications.
+
+The current peer I/O code can remain runnable after partial progress because:
+
+- input may already be buffered in `inbuf_`
+- output may already be buffered in `outbuf_`
+- protocol processing can generate more output while handling input
+
+The strict scheduler therefore needs a notion of requeueing runnable work without waiting for a new socket callback.
+
+### 4. Protocol or control messages currently get explicit precedence
+
+The current allocator flushes non-piece outbound protocol messages before its fairness pass.
+
+The strict allocator should preserve that intent. Strict priority between peers should not regress the existing preference for getting protocol or control traffic out promptly within a peer.
+
+For newly generated outbound work, the initial implementation should prefer reusing the existing zero-delay outbound flush timer path rather than seeding runnable write items directly from `peer->pulse()`. This is less invasive and also naturally covers outbound work produced outside the pulse path, such as request-triggered output generation while processing inbound peer traffic.
+
+### 5. Settings validation is not generic today
+
+The current generic session settings serializer does not provide a built-in hard-fail path for invalid setting values. Invalid deserialization generally leaves the existing field value unchanged.
+
+Because the allocator setting should warn and fall back on invalid names, that validation will still need to be explicit in the implementation rather than assumed from the generic settings loader.
+
+The preferred shape is:
+
+- define one shared allocator-name parser or validator
+- invoke it from the session settings load or initialization path, close to where merged config is deserialized and applied
+- reuse that same helper from any future entry path that may set allocator mode
+
+This keeps the validation logic near config deserialization, which matches how this setting is intended to be introduced, while still avoiding duplicated policy. The validator should surface whether the value was recognized so the caller can warn and select `default`.
+
+### 6. Session settings and RPC exposure are separate concerns
+
+Adding a field to session settings is straightforward, but that does not automatically expose it through RPC `session-get` or `session-set`.
+
+For the initial implementation, allocator selection should remain config-file only and should not be exposed through RPC.
+
+### 7. uTP read-side behavior differs fundamentally from TCP today
+
+The current TCP path is pull-based at the `tr_peerIo` layer: Transmission decides when to call into `try_read()`.
+
+The current uTP read path is different. libutp pushes data into the peer I/O buffer via a callback, and the callback currently proceeds directly into input processing.
+
+This is important because strict read-side priority is much simpler to enforce when Transmission controls when bytes are pulled from the transport. In the current uTP path, transport delivery into userspace happens before the scheduler gets to choose whether that peer should be serviced next.
+
+For the initial implementation, the goal is not to boil the ocean on uTP. The implementation should stay as close as practical to current uTP behavior unless there is a concrete reason it cannot.
+
+For v1, this means:
+
+- TCP read-side work should participate in strict scheduler ownership
+- uTP should preserve its current delivery model as much as practical
+- if possible, scheduler integration should happen at the post-buffer processing stage for uTP rather than by trying to redesign transport delivery itself
+
+This is an explicit compromise for the initial implementation, not a claim that TCP and uTP read-side behavior will be equally strict internally.
+
+## Invariants To Preserve
+
+- Bandwidth accounting must remain correct.
+- Existing speed limits must still be honored.
+- Existing behavior must remain unchanged in the legacy allocator mode.
+- Work should not be lost, duplicated, or starved accidentally within a priority class.
+- The scheduler must avoid unbounded busy looping when work is repeatedly requeued.
+- The strict scheduler must yield in time for the next pulse.
+- Invalid allocator names must produce a warning and select the legacy allocator.
+- Allocator selection remains config-file only and requires restart in the initial implementation.
+
+## Open Questions
+
+
+## Testing Strategy
+
+The new allocator should be validated primarily with behavioral tests that prove its ordering guarantees rather than only with narrow unit tests of internal helpers.
+
+The test plan should include both:
+
+- legacy-mode tests to confirm that `default` behavior remains unchanged
+- strict-mode tests to confirm the new ordering guarantees
+
+The most important tests for the new allocator are:
+
+### 1. Pulse-ordering tests
+
+Behavioral tests should verify that within a pulse:
+
+- `HIGH` work is served before `NORMAL`
+- `NORMAL` work is served before `LOW`
+- lower-priority work does not make progress while higher-priority eligible work still exists
+- round-robin fairness is preserved within a priority class
+
+### 2. Event-driven priority tests
+
+Behavioral tests should verify that for event-driven work within a pulse:
+
+- readiness notifications are routed through the selected scheduler
+- in `strict` mode, event callbacks do not perform I/O directly
+- queued `HIGH` work is executed before queued `NORMAL` or `LOW` work
+- queued `NORMAL` work is executed before queued `LOW` work
+- newly arrived `HIGH` work preempts pending lower-priority work within the same pulse
+
+### 3. Cross-source tests
+
+Behavioral tests should verify that strict ordering continues to hold when work flows between sources, for example:
+
+- pulse-generated work is handled by the same priority rules as readiness-driven work
+- execution generates more runnable work and that work is still ordered correctly
+- a pulse does not need to end before newly generated higher-priority work can take precedence
+
+### 4. Pulse-timing tests
+
+Behavioral tests should verify that:
+
+- the strict scheduler yields in time for the next pulse
+- one long drain loop does not indefinitely delay subsequent pulses
+
+### 5. Limit and accounting tests
+
+Behavioral tests should verify that:
+
+- strict ordering does not break bandwidth limits
+- byte accounting remains correct
+- upload and download directions both obey strict priority
+- legacy behavior remains unchanged in `default` mode
+
+### 6. Configuration selection tests
+
+Tests should verify that:
+
+- unset allocator name selects legacy behavior
+- `default` selects legacy behavior
+- `strict` selects the new allocator
+- invalid allocator names log a warning and select legacy behavior
+
+The current tree does not appear to have dedicated bandwidth allocator tests yet, so this work will likely need new coverage.
+
+The existing test harness already provides useful building blocks for event-driven behavioral tests, including:
+
+- libevent pumping helpers
+- socketpair-based peer I/O tests
+
+The expectation is that the test harness should be able to inject readiness into the scheduler and observe execution order. If that turns out not to be sufficient, a focused scheduler test harness should be added rather than weakening the behavioral coverage goals.
+
+## Build and Validation Workflow
+
+This work is being developed in a Nix-centric environment and Linux validation is the primary target.
+
+The preferred local validation path is based on the `transmission_4` package from a local `nixpkgs` checkout, with Linux builds executed through configured `x86_64-linux` builders.
+
+Helper expression:
+
+- [extras/nix/transmission-local-linux.nix](/Users/ihrachyshka/src/transmission/all-sync-bandwidth-allocator/extras/nix/transmission-local-linux.nix)
+
+Checkout prerequisite:
+
+```bash
+git submodule update --init --recursive
+```
+
+The helper expression copies the current checkout into the Nix store. Unlike the released nixpkgs tarball, that means the local checkout must already have the required third-party submodules populated.
+
+Expected command shape:
+
+```bash
+nix build \
+  -I nixpkgs=$HOME/src/nixpkgs \
+  -f extras/nix/transmission-local-linux.nix package \
+  --system x86_64-linux \
+  --no-link \
+  -L
+```
+
+Checked build with tests:
+
+```bash
+nix build \
+  -I nixpkgs=$HOME/src/nixpkgs \
+  -f extras/nix/transmission-local-linux.nix checked \
+  --system x86_64-linux \
+  --no-link \
+  -L
+```
+
+The helper expression exists because this branch's source layout is not identical to the released tarball currently packaged in nixpkgs, so the local validation path needs a small branch-specific override while still staying close to the nixpkgs package definition.
+
+As implementation proceeds, this Nix path should be used regularly to confirm:
+
+- the tree still builds on Linux
+- the relevant tests still pass
+- each logical commit is in a releasable state
+
+## Success Criteria
+
+This effort will be considered successful if all of the following are true:
+
+- a user can opt into the new allocator through configuration
+- the legacy allocator remains behaviorally unchanged when selected
+- `HIGH` priority traffic strictly dominates `NORMAL` and `LOW`
+- `NORMAL` priority traffic strictly dominates `LOW`
+- new higher-priority work can preempt lower-priority work within the same pulse
+- the strict scheduler yields in time for the next pulse
+- bandwidth limits remain enforced correctly
+- the implementation is isolated enough that future iteration on the strict-priority mode does not destabilize the legacy mode
