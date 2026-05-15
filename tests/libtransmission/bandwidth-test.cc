@@ -389,7 +389,7 @@ TEST_F(BandwidthTest, allocateArmsAsyncUploadSpilloverWhenForceStillHasQueuedUpl
     destroyIo(force_io, force_sock);
 }
 
-TEST_F(BandwidthTest, historicalForceUploadPressureReservesSyncBudgetFromHigh)
+TEST_F(BandwidthTest, optimisticHistoricalForceUploadPressureReservesSyncBudgetFromHigh)
 {
     setSinglePulseLimit(TR_UP);
 
@@ -405,7 +405,7 @@ TEST_F(BandwidthTest, historicalForceUploadPressureReservesSyncBudgetFromHigh)
     high_io->bandwidth().setPriority(TR_PRI_HIGH);
     high_io->write_bytes(std::array<char, BytesPerPulse>{}.data(), BytesPerPulse, true);
 
-    force_io->bandwidth().notifyBandwidthConsumed(TR_UP, BytesPerPulse * 4U, true, tr_time_msec());
+    force_io->bandwidth().notifyBandwidthConsumed(TR_UP, BytesPerPulse * 3U, true, tr_time_msec());
 
     struct Snapshot
     {

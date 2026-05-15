@@ -4,6 +4,7 @@
 // License text can be found in the licenses/ folder.
 
 #include <algorithm>
+#include <limits>
 #include <utility> // for std::swap()
 #include <vector>
 
@@ -90,6 +91,13 @@ namespace
 // out in a timely manner.
 auto constexpr PhaseOneIncrement = size_t{ 3000 };
 auto constexpr LateAsyncBorrowPercent = size_t{ 20U };
+
+[[nodiscard]] size_t saturatingAdd(size_t lhs, size_t rhs) noexcept
+{
+    auto constexpr MaxSize = std::numeric_limits<size_t>::max();
+
+    return lhs > MaxSize - rhs ? MaxSize : lhs + rhs;
+}
 
 namespace deparent_helpers
 {
@@ -246,6 +254,7 @@ void tr_bandwidth::phaseOneForce(std::vector<tr_peerIo*>& peers, tr_direction di
 void tr_bandwidth::allocate(unsigned int period_msec)
 {
     static auto constexpr AsyncUploadSpilloverPercent = size_t{ 100U };
+    static auto constexpr ForceUploadPressureReserveExtraDivisor = size_t{ 2U };
 
     // keep these peers alive for the scope of this function
     auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
@@ -333,11 +342,16 @@ void tr_bandwidth::allocate(unsigned int period_msec)
 
     auto const force_recent_up_pulse_bytes = size_t{ force_recent_up_bps * uint64_t{ period_msec } / 1000U };
     auto const force_upload_pressure_bytes = std::max(queued_force_piece_bytes, force_recent_up_pulse_bytes);
+    auto const optimistic_force_upload_pressure_bytes =
+        saturatingAdd(force_upload_pressure_bytes, force_upload_pressure_bytes / ForceUploadPressureReserveExtraDivisor);
 
     auto reserved_force_upload_bytes = size_t{};
-    if (this->isLimited(TR_UP) && force_upload_pressure_bytes > 0U)
+    if (this->isLimited(TR_UP) && optimistic_force_upload_pressure_bytes > 0U)
     {
-        reserved_force_upload_bytes = std::min(this->band_[TR_UP].bytes_left_, force_upload_pressure_bytes);
+        // Keep some aspirational runway for small FORCE swarms so they can
+        // grow into the pulse instead of only getting what current queue
+        // depth or recent history already proved.
+        reserved_force_upload_bytes = std::min(this->band_[TR_UP].bytes_left_, optimistic_force_upload_pressure_bytes);
         this->band_[TR_UP].bytes_left_ -= reserved_force_upload_bytes;
     }
 
@@ -351,11 +365,11 @@ void tr_bandwidth::allocate(unsigned int period_msec)
         this->band_[TR_UP].bytes_left_ += reserved_force_upload_bytes;
     }
 
-    if (this->isLimited(TR_UP) && force_upload_pressure_bytes > 0U)
+    if (this->isLimited(TR_UP) && optimistic_force_upload_pressure_bytes > 0U)
     {
         auto const unforced_async_upload_spillover_budget =
-            this->band_[TR_UP].bytes_left_ > force_upload_pressure_bytes ?
-                this->band_[TR_UP].bytes_left_ - force_upload_pressure_bytes :
+            this->band_[TR_UP].bytes_left_ > optimistic_force_upload_pressure_bytes ?
+                this->band_[TR_UP].bytes_left_ - optimistic_force_upload_pressure_bytes :
                 0U;
         setAsyncUploadPieceSpilloverBudget(
             unforced_async_upload_spillover_budget * AsyncUploadSpilloverPercent / 100U);
