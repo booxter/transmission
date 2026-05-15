@@ -117,7 +117,10 @@ protected:
     static auto constexpr QuarterPulseBytes = BytesPerPulse / 4U;
     static auto constexpr LateBorrowBytes = BytesPerPulse / 5U;
     static auto constexpr BootstrapReservePercent = size_t{ 20U };
+    static auto constexpr BootstrapReserveBytes = BytesPerPulse * BootstrapReservePercent / 100U;
+    static auto constexpr SyncUploadSpilloverPercent = size_t{ 25U };
     static auto constexpr UnforcedBytesAfterBootstrap = BytesPerPulse * (100U - BootstrapReservePercent) / 100U;
+    static auto constexpr SyncSpilloverBytesAfterBootstrap = UnforcedBytesAfterBootstrap * SyncUploadSpilloverPercent / 100U;
     static auto constexpr AsyncSpilloverPercent = size_t{ 25U };
     static auto constexpr AsyncSpilloverBytesAfterBootstrap = UnforcedBytesAfterBootstrap * AsyncSpilloverPercent / 100U;
     static constexpr unsigned int PeriodMsec = 500U;
@@ -317,9 +320,11 @@ TEST_F(BandwidthTest, forceUploadPeerKeepsBootstrapRunwayFromHigh)
 
     ASSERT_EQ(std::future_status::ready, future.wait_for(20s));
     auto const snapshot = future.get();
+    auto const high_sync_budget_after_force =
+        (BytesPerPulse - HalfPulseBytes - BootstrapReserveBytes) * SyncUploadSpilloverPercent / 100U;
     EXPECT_EQ(HalfPulseBytes, snapshot.force_piece_bytes);
-    EXPECT_EQ(UnforcedBytesAfterBootstrap - HalfPulseBytes, snapshot.high_piece_bytes);
-    EXPECT_EQ(UnforcedBytesAfterBootstrap, snapshot.force_piece_bytes + snapshot.high_piece_bytes);
+    EXPECT_EQ(high_sync_budget_after_force, snapshot.high_piece_bytes);
+    EXPECT_EQ(HalfPulseBytes + high_sync_budget_after_force, snapshot.force_piece_bytes + snapshot.high_piece_bytes);
 
     destroyIo(force_io, force_sock);
     destroyIo(high_io, high_sock);
@@ -529,7 +534,7 @@ TEST_F(BandwidthTest, coldForcePeerReservesBootstrapRunwayFromHigh)
     ASSERT_EQ(std::future_status::ready, future.wait_for(20s));
     auto const snapshot = future.get();
     EXPECT_EQ(0U, snapshot.force_piece_bytes);
-    EXPECT_EQ(UnforcedBytesAfterBootstrap, snapshot.high_piece_bytes);
+    EXPECT_EQ(SyncSpilloverBytesAfterBootstrap, snapshot.high_piece_bytes);
     EXPECT_TRUE(snapshot.spillover_enforced);
 
     destroyIo(force_io, force_sock);

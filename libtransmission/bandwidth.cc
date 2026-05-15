@@ -254,6 +254,7 @@ void tr_bandwidth::phaseOneForce(std::vector<tr_peerIo*>& peers, tr_direction di
 
 void tr_bandwidth::allocate(unsigned int period_msec)
 {
+    static auto constexpr SyncUploadSpilloverPercent = size_t{ 25U };
     static auto constexpr AsyncUploadSpilloverPercent = size_t{ 25U };
     static auto constexpr ForceUploadPressureReserveMultiplier = size_t{ 4U };
 
@@ -360,9 +361,23 @@ void tr_bandwidth::allocate(unsigned int period_msec)
         this->band_[TR_UP].bytes_left_ -= reserved_force_upload_bytes;
     }
 
+    auto deferred_unforced_sync_upload_bytes = size_t{};
+    if (this->isLimited(TR_UP) && effective_force_upload_target_bytes > 0U)
+    {
+        auto const unforced_sync_upload_budget =
+            this->band_[TR_UP].bytes_left_ * SyncUploadSpilloverPercent / 100U;
+        deferred_unforced_sync_upload_bytes = this->band_[TR_UP].bytes_left_ - unforced_sync_upload_budget;
+        this->band_[TR_UP].bytes_left_ = unforced_sync_upload_budget;
+    }
+
     for (auto* peers : { &unforced_upload_high, &unforced_upload_normal, &unforced_upload_low })
     {
         phaseOne(*peers, TR_UP);
+    }
+
+    if (deferred_unforced_sync_upload_bytes > 0U)
+    {
+        this->band_[TR_UP].bytes_left_ += deferred_unforced_sync_upload_bytes;
     }
 
     if (reserved_force_upload_bytes > 0U)
