@@ -76,6 +76,7 @@ enum // NOLINT(performance-enum-size)
     TR_KEY_availability, // rpc
     TR_KEY_bandwidth_priority_kebab_APICOMPAT,
     TR_KEY_bandwidth_priority_camel_APICOMPAT,
+    TR_KEY_bandwidth_allocator, /* settings */
     TR_KEY_bandwidth_priority,
     TR_KEY_begin_piece,
     TR_KEY_bind_address_ipv4_kebab_APICOMPAT,

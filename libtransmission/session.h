@@ -416,6 +416,21 @@ public:
 
             if (auto const* map = src.get_if<tr_variant::Map>())
             {
+                if (auto const it = map->find(TR_KEY_bandwidth_allocator); it != map->end())
+                {
+                    auto mode = tr_bandwidth_allocator_mode::Default;
+
+                    if (tr::serializer::Converters::deserialize(it->second, &mode))
+                    {
+                        bandwidth_allocator_mode = mode;
+                    }
+                    else
+                    {
+                        tr_logAddWarn("Invalid 'bandwidth_allocator' setting; using 'default'");
+                        bandwidth_allocator_mode = tr_bandwidth_allocator_mode::Default;
+                    }
+                }
+
                 if (map->contains(TR_KEY_preferred_transports))
                 {
                     fixup_from_preferred_transports();
@@ -471,6 +486,7 @@ public:
         size_t speed_limit_down = 100U;
         size_t speed_limit_up = 100U;
         size_t upload_slots_per_torrent = 8U;
+        tr_bandwidth_allocator_mode bandwidth_allocator_mode = tr_bandwidth_allocator_mode::Default;
         small::max_size_vector<tr_preferred_transport, TR_NUM_PREFERRED_TRANSPORT> preferred_transports = {
             TR_PREFER_UTP,
             TR_PREFER_TCP,
@@ -510,6 +526,7 @@ public:
         static constexpr auto Fields = std::tuple{
             Field<&Settings::announce_ip>{ TR_KEY_announce_ip },
             Field<&Settings::announce_ip_enabled>{ TR_KEY_announce_ip_enabled },
+            Field<&Settings::bandwidth_allocator_mode>{ TR_KEY_bandwidth_allocator },
             Field<&Settings::bind_address_ipv4>{ TR_KEY_bind_address_ipv4 },
             Field<&Settings::bind_address_ipv6>{ TR_KEY_bind_address_ipv6 },
             Field<&Settings::blocklist_enabled>{ TR_KEY_blocklist_enabled },
@@ -976,6 +993,11 @@ public:
     [[nodiscard]] constexpr auto encryptionMode() const noexcept
     {
         return settings().encryption_mode;
+    }
+
+    [[nodiscard]] constexpr auto bandwidthAllocator() const noexcept
+    {
+        return settings().bandwidth_allocator_mode;
     }
 
     [[nodiscard]] auto serialize_encryption_mode() const noexcept

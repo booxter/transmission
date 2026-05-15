@@ -22,6 +22,7 @@
 #include <small/set.hpp>
 #include <small/vector.hpp>
 
+#include "libtransmission/bandwidth.h" // tr_bandwidth_allocator_mode
 #include "libtransmission/log.h" // for tr_log_level
 #include "libtransmission/net.h" // for tr_port
 #include "libtransmission/open-files.h" // for tr_open_files::Preallocation
@@ -172,6 +173,23 @@ bool to_encryption_mode(tr_variant const& src, tr_encryption_mode* tgt)
 tr_variant from_encryption_mode(tr_encryption_mode const& val)
 {
     return from_enum_or_integral_with_lookup(EncryptionKeys, val);
+}
+
+// ---
+
+auto constexpr BandwidthAllocatorKeys = LookupTable<tr_bandwidth_allocator_mode, 2U>{ {
+    { "default", tr_bandwidth_allocator_mode::Default },
+    { "strict", tr_bandwidth_allocator_mode::Strict },
+} };
+
+bool to_bandwidth_allocator_mode(tr_variant const& src, tr_bandwidth_allocator_mode* tgt)
+{
+    return to_enum_or_integral_with_lookup(BandwidthAllocatorKeys, src, tgt);
+}
+
+tr_variant from_bandwidth_allocator_mode(tr_bandwidth_allocator_mode const& val)
+{
+    return from_enum_or_integral_with_lookup(BandwidthAllocatorKeys, val);
 }
 
 // ---
@@ -598,6 +616,7 @@ void Converters::ensure_default_converters()
         once,
         []
         {
+            Converters::add(to_bandwidth_allocator_mode, from_bandwidth_allocator_mode);
             Converters::add(to_bool, from_bool);
             Converters::add(to_diffserv_t, from_diffserv_t);
             Converters::add(to_double, from_double);

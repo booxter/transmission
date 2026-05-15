@@ -35,6 +35,12 @@ struct tr_bandwidth_limits
     bool down_limited = false;
 };
 
+enum class tr_bandwidth_allocator_mode : uint8_t
+{
+    Default,
+    Strict,
+};
+
 /**
  * `tr_bandwidth` is an object for measuring and constraining bandwidth speeds.
  *

@@ -65,6 +65,7 @@ auto constexpr MyStatic = std::array<std::u8string_view, TR_N_KEYS>{
     u8"availability"sv, // rpc
     u8"bandwidth-priority"sv, // .resume
     u8"bandwidthPriority"sv, // rpc
+    u8"bandwidth_allocator"sv, // tr_session::Settings
     u8"bandwidth_priority"sv, // .resume, rpc
     u8"begin_piece"sv, // rpc
     u8"bind-address-ipv4"sv, // daemon, tr_session::Settings

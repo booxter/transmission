@@ -125,6 +125,76 @@ TEST_F(SettingsTest, canSaveEncryptionMode)
     EXPECT_EQ(ExpectedValue, *val);
 }
 
+TEST_F(SettingsTest, canLoadBandwidthAllocatorMode)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_allocator;
+    static auto constexpr ExpectedValue = tr_bandwidth_allocator_mode::Strict;
+
+    auto settings = std::make_unique<tr_session::Settings>();
+    ASSERT_NE(ExpectedValue, settings->bandwidth_allocator_mode);
+
+    auto map = tr_variant::Map{ 1U };
+    map.try_emplace(Key, ExpectedValue);
+    settings->load(tr_variant{ std::move(map) });
+    EXPECT_EQ(ExpectedValue, settings->bandwidth_allocator_mode);
+
+    settings = std::make_unique<tr_session::Settings>();
+    map = tr_variant::Map{ 1U };
+    map.try_emplace(Key, "strict"sv);
+    settings->load(tr_variant{ std::move(map) });
+    EXPECT_EQ(ExpectedValue, settings->bandwidth_allocator_mode);
+}
+
+TEST_F(SettingsTest, canSaveBandwidthAllocatorMode)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_allocator;
+    static auto constexpr ChangedValue = tr_bandwidth_allocator_mode::Strict;
+
+    auto settings = tr_session::Settings{};
+    ASSERT_NE(ChangedValue, settings.bandwidth_allocator_mode);
+
+    settings.bandwidth_allocator_mode = ChangedValue;
+    auto const map = settings.save();
+    auto const val = map.value_if<std::string_view>(Key);
+    ASSERT_TRUE(val);
+    EXPECT_EQ("strict"sv, *val);
+}
+
+TEST_F(SettingsTest, invalidBandwidthAllocatorFallsBackToDefaultAndWarns)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_allocator;
+
+    auto const old_level = tr_logGetLevel();
+    tr_logSetLevel(TR_LOG_WARN);
+    tr_logSetQueueEnabled(true);
+    tr_logFreeQueue(tr_logGetQueue());
+
+    auto settings = tr_session::Settings{};
+    settings.bandwidth_allocator_mode = tr_bandwidth_allocator_mode::Strict;
+
+    auto map = tr_variant::Map{ 1U };
+    map.try_emplace(Key, "bogus"sv);
+    settings.load(tr_variant{ std::move(map) });
+
+    auto* const msgs = tr_logGetQueue();
+    auto warned = false;
+    for (auto* msg = msgs; msg != nullptr; msg = msg->next)
+    {
+        if (msg->level == TR_LOG_WARN && msg->message.find("Invalid 'bandwidth_allocator' setting") != std::string::npos)
+        {
+            warned = true;
+            break;
+        }
+    }
+
+    tr_logFreeQueue(msgs);
+    tr_logSetQueueEnabled(false);
+    tr_logSetLevel(old_level);
+
+    EXPECT_EQ(tr_bandwidth_allocator_mode::Default, settings.bandwidth_allocator_mode);
+    EXPECT_TRUE(warned);
+}
+
 TEST_F(SettingsTest, canLoadLogLevel)
 {
     static auto constexpr Key = TR_KEY_message_level;
