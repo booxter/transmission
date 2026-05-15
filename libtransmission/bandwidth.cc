@@ -91,6 +91,7 @@ namespace
 // out in a timely manner.
 auto constexpr PhaseOneIncrement = size_t{ 3000 };
 auto constexpr LateAsyncBorrowPercent = size_t{ 20U };
+auto constexpr ForceBootstrapReservePercent = size_t{ 5U };
 
 [[nodiscard]] size_t saturatingAdd(size_t lhs, size_t rhs) noexcept
 {
@@ -344,14 +345,18 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     auto const force_upload_pressure_bytes = std::max(queued_force_piece_bytes, force_recent_up_pulse_bytes);
     auto const optimistic_force_upload_pressure_bytes =
         saturatingAdd(force_upload_pressure_bytes, force_upload_pressure_bytes / ForceUploadPressureReserveExtraDivisor);
+    auto const bootstrap_force_upload_bytes =
+        !std::empty(force) ? current_pulse_upload_limit_bytes_ * ForceBootstrapReservePercent / 100U : 0U;
+    auto const effective_force_upload_target_bytes =
+        std::max(optimistic_force_upload_pressure_bytes, bootstrap_force_upload_bytes);
 
     auto reserved_force_upload_bytes = size_t{};
-    if (this->isLimited(TR_UP) && optimistic_force_upload_pressure_bytes > 0U)
+    if (this->isLimited(TR_UP) && effective_force_upload_target_bytes > 0U)
     {
         // Keep some aspirational runway for small FORCE swarms so they can
         // grow into the pulse instead of only getting what current queue
         // depth or recent history already proved.
-        reserved_force_upload_bytes = std::min(this->band_[TR_UP].bytes_left_, optimistic_force_upload_pressure_bytes);
+        reserved_force_upload_bytes = std::min(this->band_[TR_UP].bytes_left_, effective_force_upload_target_bytes);
         this->band_[TR_UP].bytes_left_ -= reserved_force_upload_bytes;
     }
 
@@ -365,11 +370,11 @@ void tr_bandwidth::allocate(unsigned int period_msec)
         this->band_[TR_UP].bytes_left_ += reserved_force_upload_bytes;
     }
 
-    if (this->isLimited(TR_UP) && optimistic_force_upload_pressure_bytes > 0U)
+    if (this->isLimited(TR_UP) && effective_force_upload_target_bytes > 0U)
     {
         auto const unforced_async_upload_spillover_budget =
-            this->band_[TR_UP].bytes_left_ > optimistic_force_upload_pressure_bytes ?
-                this->band_[TR_UP].bytes_left_ - optimistic_force_upload_pressure_bytes :
+            this->band_[TR_UP].bytes_left_ > effective_force_upload_target_bytes ?
+                this->band_[TR_UP].bytes_left_ - effective_force_upload_target_bytes :
                 0U;
         setAsyncUploadPieceSpilloverBudget(
             unforced_async_upload_spillover_budget * AsyncUploadSpilloverPercent / 100U);
