@@ -156,6 +156,7 @@ public:
      */
     [[nodiscard]] size_t clampAsyncUploadPieceBytes(size_t byte_count, tr_priority_t peer_priority) const noexcept;
     void maybeOpenLateNonForceAsyncBorrow() noexcept;
+    void maybeOpenTailNonForceAsyncFloodgate(size_t cumulative_percent) noexcept;
     void revokeLateNonForceAsyncBorrow(tr_priority_t peer_priority) noexcept;
 
     void setAsyncUploadPieceSpilloverBudget(size_t byte_count) noexcept
@@ -178,6 +179,11 @@ public:
     [[nodiscard]] constexpr size_t asyncUploadPieceSpilloverBudgetLeft() const noexcept
     {
         return async_upload_piece_spillover_budget_left_;
+    }
+
+    [[nodiscard]] uint64_t currentPulseDeadlineMsec() const noexcept
+    {
+        return parent_ != nullptr ? parent_->currentPulseDeadlineMsec() : current_pulse_deadline_msec_;
     }
 
     /** @brief Get the raw total of bytes read or sent by this bandwidth subtree. */

@@ -687,6 +687,8 @@ struct tr_peerMgr
         : session{ session_in }
         , handshake_mediator_{ *session }
         , bandwidth_timer_{ session->timerMaker().create([this]() { bandwidthPulse(); }) }
+        , bandwidth_tail_stage_one_timer_{ session->timerMaker().create([this]() { bandwidthTailFloodgateStageOnePulse(); }) }
+        , bandwidth_tail_stage_two_timer_{ session->timerMaker().create([this]() { bandwidthTailFloodgateStageTwoPulse(); }) }
         , rechoke_timer_{ session->timerMaker().create([this]() { rechokePulseMarshall(); }) }
         , refill_upkeep_timer_{ session->timerMaker().create([this]() { refillUpkeep(); }) }
     {
@@ -717,6 +719,8 @@ struct tr_peerMgr
     }
 
     void bandwidthPulse();
+    void bandwidthTailFloodgateStageOnePulse();
+    void bandwidthTailFloodgateStageTwoPulse();
     void rechokePulse() const;
     void reconnectPulse();
     void refillUpkeep() const;
@@ -741,10 +745,22 @@ private:
     }
 
     std::unique_ptr<libtransmission::Timer> const bandwidth_timer_;
+    std::unique_ptr<libtransmission::Timer> const bandwidth_tail_stage_one_timer_;
+    std::unique_ptr<libtransmission::Timer> const bandwidth_tail_stage_two_timer_;
     std::unique_ptr<libtransmission::Timer> const rechoke_timer_;
     std::unique_ptr<libtransmission::Timer> const refill_upkeep_timer_;
+    uint64_t bandwidth_pulse_sequence_ = 0U;
+    uint64_t bandwidth_tail_stage_timer_pulse_sequence_ = 0U;
 
     static auto constexpr BandwidthPeriod = 500ms;
+    static auto constexpr TailFloodgateStageOneDelay = BandwidthPeriod - BandwidthPeriod / 4;
+    static auto constexpr TailFloodgateStageTwoDelay = BandwidthPeriod - BandwidthPeriod / 10;
+    static auto constexpr TailFloodgateStageOneWindowMsec =
+        std::chrono::duration_cast<std::chrono::milliseconds>(BandwidthPeriod / 4).count();
+    static auto constexpr TailFloodgateStageTwoWindowMsec =
+        std::chrono::duration_cast<std::chrono::milliseconds>(BandwidthPeriod / 10).count();
+    static auto constexpr TailFloodgateStageOnePercent = size_t{ 5U };
+    static auto constexpr TailFloodgateStageTwoPercent = size_t{ 10U };
     static auto constexpr RechokePeriod = 10s;
     static auto constexpr RefillUpkeepPeriod = 10s;
 
@@ -2256,6 +2272,10 @@ void tr_peerMgr::bandwidthPulse()
     using namespace bandwidth_helpers;
 
     auto const lock = unique_lock();
+    ++bandwidth_pulse_sequence_;
+    bandwidth_tail_stage_timer_pulse_sequence_ = bandwidth_pulse_sequence_;
+    bandwidth_tail_stage_one_timer_->startSingleShot(TailFloodgateStageOneDelay);
+    bandwidth_tail_stage_two_timer_->startSingleShot(TailFloodgateStageTwoDelay);
 
     pumpAllPeers(this);
 
@@ -2275,6 +2295,36 @@ void tr_peerMgr::bandwidthPulse()
     queuePulse(session, TR_DOWN);
 
     reconnectPulse();
+}
+
+void tr_peerMgr::bandwidthTailFloodgateStageOnePulse()
+{
+    auto const lock = unique_lock();
+    auto const now = tr_time_msec();
+
+    if (bandwidth_tail_stage_timer_pulse_sequence_ != bandwidth_pulse_sequence_ ||
+        now >= session->top_bandwidth_.currentPulseDeadlineMsec() ||
+        now + TailFloodgateStageOneWindowMsec < session->top_bandwidth_.currentPulseDeadlineMsec())
+    {
+        return;
+    }
+
+    session->top_bandwidth_.maybeOpenTailNonForceAsyncFloodgate(TailFloodgateStageOnePercent);
+}
+
+void tr_peerMgr::bandwidthTailFloodgateStageTwoPulse()
+{
+    auto const lock = unique_lock();
+    auto const now = tr_time_msec();
+
+    if (bandwidth_tail_stage_timer_pulse_sequence_ != bandwidth_pulse_sequence_ ||
+        now >= session->top_bandwidth_.currentPulseDeadlineMsec() ||
+        now + TailFloodgateStageTwoWindowMsec < session->top_bandwidth_.currentPulseDeadlineMsec())
+    {
+        return;
+    }
+
+    session->top_bandwidth_.maybeOpenTailNonForceAsyncFloodgate(TailFloodgateStageTwoPercent);
 }
 
 // ---

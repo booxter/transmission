@@ -155,6 +155,36 @@ protected:
         EXPECT_EQ(std::future_status::ready, future.wait_for(20s));
     }
 
+    void openTailAsyncFloodgate()
+    {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+
+        session_->runInSessionThread(
+            [this, promise]()
+            {
+                session_->top_bandwidth_.maybeOpenTailNonForceAsyncFloodgate(10U);
+                promise->set_value();
+            });
+
+        EXPECT_EQ(std::future_status::ready, future.wait_for(20s));
+    }
+
+    void setAsyncUploadSpilloverBudget(size_t byte_count)
+    {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+
+        session_->runInSessionThread(
+            [this, promise, byte_count]()
+            {
+                session_->top_bandwidth_.setAsyncUploadPieceSpilloverBudget(byte_count);
+                promise->set_value();
+            });
+
+        EXPECT_EQ(std::future_status::ready, future.wait_for(20s));
+    }
+
     void flushUploads(std::vector<std::shared_ptr<tr_peerIo>> ios)
     {
         auto promise = std::make_shared<std::promise<void>>();
@@ -471,6 +501,79 @@ TEST_F(BandwidthTest, lateAsyncBorrowLetsHighPeerUseTailAfterForceQuiesces)
     flushUploads({ high_io });
 
     EXPECT_EQ(LateBorrowBytes, high_stats.piece_bytes);
+
+    destroyIo(force_io, force_sock);
+    destroyIo(high_io, high_sock);
+}
+
+TEST_F(BandwidthTest, tailFloodgateLetsHighPeerUseTailWhileForcePollerStillExists)
+{
+    setSinglePulseLimit(TR_UP);
+
+    auto [force_io, force_sock] = createIncomingIo();
+    auto [high_io, high_sock] = createIncomingIo();
+
+    auto high_stats = TransferStats{};
+    high_io->set_callbacks(nullptr, didWriteCounter, nullptr, &high_stats);
+
+    force_io->bandwidth().setPriority(TR_PRI_FORCE);
+    high_io->bandwidth().setPriority(TR_PRI_HIGH);
+    high_io->write_bytes(std::array<char, BytesPerPulse>{}.data(), BytesPerPulse, true);
+
+    force_io->bandwidth().notifyBandwidthConsumed(TR_UP, BytesPerPulse * 12U, true, tr_time_msec());
+
+    struct Snapshot
+    {
+        size_t sync_high_piece_bytes = 0U;
+        size_t blocked_high_piece_bytes = 0U;
+        size_t tail_budget_left = 0U;
+        size_t tail_high_piece_bytes = 0U;
+        bool force_write_polling = false;
+        bool spillover_enforced = false;
+    };
+
+    auto promise = std::make_shared<std::promise<Snapshot>>();
+    auto future = promise->get_future();
+    auto force_io_copy = force_io;
+    auto high_io_copy = high_io;
+
+    session_->runInSessionThread(
+        [this, promise, force_io_copy, high_io_copy, &high_stats]()
+        {
+            session_->top_bandwidth_.allocate(PeriodMsec);
+
+            auto snapshot = Snapshot{};
+            snapshot.sync_high_piece_bytes = high_stats.piece_bytes;
+            snapshot.spillover_enforced = session_->top_bandwidth_.isAsyncUploadPieceSpilloverBudgetEnforced();
+            force_io_copy->write_bytes(std::array<char, HalfPulseBytes>{}.data(), HalfPulseBytes, true);
+            snapshot.force_write_polling = force_io_copy->is_write_polling_enabled();
+
+            session_->top_bandwidth_.setAsyncUploadPieceSpilloverBudget(0U);
+            high_io_copy->flush(TR_UP, SIZE_MAX);
+            snapshot.blocked_high_piece_bytes = high_stats.piece_bytes;
+
+            session_->top_bandwidth_.maybeOpenTailNonForceAsyncFloodgate(10U);
+            snapshot.tail_budget_left = session_->top_bandwidth_.asyncUploadPieceSpilloverBudgetLeft();
+
+            high_io_copy->flush(TR_UP, SIZE_MAX);
+            snapshot.tail_high_piece_bytes = high_stats.piece_bytes;
+
+            force_io_copy->set_enabled(TR_UP, false);
+            force_io_copy->set_enabled(TR_DOWN, false);
+            high_io_copy->set_enabled(TR_UP, false);
+            high_io_copy->set_enabled(TR_DOWN, false);
+
+            promise->set_value(snapshot);
+        });
+
+    ASSERT_EQ(std::future_status::ready, future.wait_for(20s));
+    auto const snapshot = future.get();
+
+    EXPECT_TRUE(snapshot.spillover_enforced);
+    EXPECT_TRUE(snapshot.force_write_polling);
+    EXPECT_EQ(snapshot.sync_high_piece_bytes, snapshot.blocked_high_piece_bytes);
+    EXPECT_GT(snapshot.tail_budget_left, 0U);
+    EXPECT_GT(snapshot.tail_high_piece_bytes, snapshot.blocked_high_piece_bytes);
 
     destroyIo(force_io, force_sock);
     destroyIo(high_io, high_sock);
