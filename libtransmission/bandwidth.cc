@@ -93,11 +93,11 @@ auto constexpr PhaseOneIncrement = size_t{ 3000 };
 auto constexpr LateAsyncBorrowPercent = size_t{ 20U };
 auto constexpr ForceBootstrapReservePercent = size_t{ 5U };
 
-[[nodiscard]] size_t saturatingAdd(size_t lhs, size_t rhs) noexcept
+[[nodiscard]] size_t saturatingMultiply(size_t value, size_t multiplier) noexcept
 {
     auto constexpr MaxSize = std::numeric_limits<size_t>::max();
 
-    return lhs > MaxSize - rhs ? MaxSize : lhs + rhs;
+    return value > MaxSize / multiplier ? MaxSize : value * multiplier;
 }
 
 namespace deparent_helpers
@@ -255,7 +255,7 @@ void tr_bandwidth::phaseOneForce(std::vector<tr_peerIo*>& peers, tr_direction di
 void tr_bandwidth::allocate(unsigned int period_msec)
 {
     static auto constexpr AsyncUploadSpilloverPercent = size_t{ 100U };
-    static auto constexpr ForceUploadPressureReserveExtraDivisor = size_t{ 2U };
+    static auto constexpr ForceUploadPressureReserveMultiplier = size_t{ 4U };
 
     // keep these peers alive for the scope of this function
     auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
@@ -344,7 +344,7 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     auto const force_recent_up_pulse_bytes = size_t{ force_recent_up_bps * uint64_t{ period_msec } / 1000U };
     auto const force_upload_pressure_bytes = std::max(queued_force_piece_bytes, force_recent_up_pulse_bytes);
     auto const optimistic_force_upload_pressure_bytes =
-        saturatingAdd(force_upload_pressure_bytes, force_upload_pressure_bytes / ForceUploadPressureReserveExtraDivisor);
+        saturatingMultiply(force_upload_pressure_bytes, ForceUploadPressureReserveMultiplier);
     auto const bootstrap_force_upload_bytes =
         !std::empty(force) ? current_pulse_upload_limit_bytes_ * ForceBootstrapReservePercent / 100U : 0U;
     auto const effective_force_upload_target_bytes =
