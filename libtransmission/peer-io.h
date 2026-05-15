@@ -92,6 +92,7 @@ public:
     [[nodiscard]] bool reconnect();
 
     void set_enabled(tr_direction dir, bool is_enabled);
+    [[nodiscard]] bool is_write_polling_enabled() const noexcept;
 
     ///
 

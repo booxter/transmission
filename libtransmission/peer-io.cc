@@ -575,6 +575,11 @@ void tr_peerIo::set_enabled(tr_direction dir, bool is_enabled)
     }
 }
 
+bool tr_peerIo::is_write_polling_enabled() const noexcept
+{
+    return (pending_events_ & EV_WRITE) != 0;
+}
+
 size_t tr_peerIo::flush(tr_direction dir, size_t limit)
 {
     TR_ASSERT(tr_isDirection(dir));
@@ -637,6 +642,11 @@ void tr_peerIo::write(libtransmission::Buffer& buf, bool is_piece_data)
     outbuf_info_.emplace_back(std::size(buf), is_piece_data);
     outbuf_.add(buf);
 
+    if (was_empty && !std::empty(outbuf_) && priority() == TR_PRI_FORCE)
+    {
+        bandwidth().revokeLateNonForceAsyncBorrow(priority());
+    }
+
     if (was_empty && !std::empty(outbuf_) && has_bandwidth_left(TR_UP))
     {
         set_enabled(TR_UP, true);
@@ -657,6 +667,11 @@ void tr_peerIo::write_bytes(void const* bytes, size_t n_bytes, bool is_piece_dat
     }
 
     outbuf_info_.emplace_back(n_bytes, is_piece_data);
+
+    if (was_empty && !std::empty(outbuf_) && priority() == TR_PRI_FORCE)
+    {
+        bandwidth().revokeLateNonForceAsyncBorrow(priority());
+    }
 
     if (was_empty && !std::empty(outbuf_) && has_bandwidth_left(TR_UP))
     {

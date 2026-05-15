@@ -81,7 +81,24 @@ private:
     static constexpr size_t IntervalMSec = HistoryMSec;
     static constexpr size_t GranularityMSec = 250;
     static constexpr size_t HistorySize = (IntervalMSec / GranularityMSec);
+    struct RateControl
+    {
+        std::array<uint64_t, HistorySize> date_;
+        std::array<size_t, HistorySize> size_;
+        uint64_t cache_time_;
+        tr_bytes_per_second_t cache_val_;
+        int newest_;
+    };
 
+    struct Band
+    {
+        RateControl raw_;
+        RateControl piece_;
+        size_t bytes_left_;
+        tr_bytes_per_second_t desired_speed_bps_;
+        bool is_limited_ = false;
+        bool honor_parent_limits_ = true;
+    };
 public:
     explicit tr_bandwidth(tr_bandwidth* newParent);
 
@@ -138,6 +155,8 @@ public:
      * @brief clamps async non-FORCE upload piece bytes to the currently armed spillover budget
      */
     [[nodiscard]] size_t clampAsyncUploadPieceBytes(size_t byte_count, tr_priority_t peer_priority) const noexcept;
+    void maybeOpenLateNonForceAsyncBorrow() noexcept;
+    void revokeLateNonForceAsyncBorrow(tr_priority_t peer_priority) noexcept;
 
     void setAsyncUploadPieceSpilloverBudget(size_t byte_count) noexcept
     {
@@ -256,24 +275,6 @@ public:
     void setLimits(tr_bandwidth_limits const* limits);
 
 private:
-    struct RateControl
-    {
-        std::array<uint64_t, HistorySize> date_;
-        std::array<size_t, HistorySize> size_;
-        uint64_t cache_time_;
-        tr_bytes_per_second_t cache_val_;
-        int newest_;
-    };
-
-    struct Band
-    {
-        RateControl raw_;
-        RateControl piece_;
-        size_t bytes_left_;
-        tr_bytes_per_second_t desired_speed_bps_;
-        bool is_limited_ = false;
-        bool honor_parent_limits_ = true;
-    };
 
     static tr_bytes_per_second_t getSpeedBytesPerSecond(RateControl& r, unsigned int interval_msec, uint64_t now);
 
@@ -300,6 +301,7 @@ private:
         tr_priority_t parent_priority,
         unsigned int period_msec,
         std::vector<std::shared_ptr<tr_peerIo>>& peer_pool);
+    void appendPeers(std::vector<std::shared_ptr<tr_peerIo>>& peer_pool) const;
 
     mutable std::array<Band, 2> band_ = {};
     std::vector<tr_bandwidth*> children_;
@@ -307,7 +309,12 @@ private:
     std::weak_ptr<tr_peerIo> peer_;
     tr_priority_t priority_ = TR_PRI_NORMAL;
     size_t async_upload_piece_spillover_budget_left_ = 0U;
+    size_t current_pulse_upload_limit_bytes_ = 0U;
+    uint64_t current_pulse_deadline_msec_ = 0U;
     bool enforce_async_upload_piece_spillover_budget_ = false;
+    bool late_nonforce_async_borrow_opened_ = false;
+    bool tail_nonforce_async_floodgate_opened_ = false;
+    size_t tail_nonforce_async_floodgate_budget_granted_ = 0U;
 };
 
 /* @} */

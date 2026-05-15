@@ -89,6 +89,7 @@ namespace
 // frame right away and leave enough buffered data for the next frame to go
 // out in a timely manner.
 auto constexpr PhaseOneIncrement = size_t{ 3000 };
+auto constexpr LateAsyncBorrowPercent = size_t{ 20U };
 
 namespace deparent_helpers
 {
@@ -170,6 +171,19 @@ void tr_bandwidth::allocateBandwidth(
     }
 }
 
+void tr_bandwidth::appendPeers(std::vector<std::shared_ptr<tr_peerIo>>& peer_pool) const
+{
+    if (auto shared = this->peer_.lock(); shared)
+    {
+        peer_pool.push_back(std::move(shared));
+    }
+
+    for (auto const* child : this->children_)
+    {
+        child->appendPeers(peer_pool);
+    }
+}
+
 void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
 {
     // First phase of IO. Tries to distribute bandwidth fairly to keep faster
@@ -247,11 +261,15 @@ void tr_bandwidth::allocate(unsigned int period_msec)
     auto& download_low = download_peer_arrays[2];
     auto const now = tr_time_msec();
 
+    current_pulse_deadline_msec_ = now + period_msec;
+    current_pulse_upload_limit_bytes_ = 0U;
+    late_nonforce_async_borrow_opened_ = false;
     // allocateBandwidth () is a helper function with two purposes:
     // 1. allocate bandwidth to b and its subtree
     // 2. accumulate an array of all the peerIos from b and its subtree.
     clearAsyncUploadPieceSpilloverBudget();
     this->allocateBandwidth(TR_PRI_LOW, period_msec, refs);
+    current_pulse_upload_limit_bytes_ = this->isLimited(TR_UP) ? this->band_[TR_UP].bytes_left_ : 0U;
 
     for (auto const& io : refs)
     {
@@ -353,6 +371,8 @@ void tr_bandwidth::allocate(unsigned int period_msec)
         io->set_enabled(TR_UP, has_queued_upload && io->has_bandwidth_left(TR_UP));
         io->set_enabled(TR_DOWN, io->has_bandwidth_left(TR_DOWN));
     }
+
+    maybeOpenLateNonForceAsyncBorrow();
 }
 
 // ---
@@ -394,6 +414,105 @@ size_t tr_bandwidth::clampAsyncUploadPieceBytes(size_t byte_count, tr_priority_t
     return byte_count;
 }
 
+void tr_bandwidth::maybeOpenLateNonForceAsyncBorrow() noexcept
+{
+    if (this->parent_ != nullptr)
+    {
+        if (this->band_[TR_UP].honor_parent_limits_)
+        {
+            this->parent_->maybeOpenLateNonForceAsyncBorrow();
+        }
+
+        return;
+    }
+
+    if (!enforce_async_upload_piece_spillover_budget_ || late_nonforce_async_borrow_opened_ || this->band_[TR_UP].bytes_left_ == 0U ||
+        current_pulse_upload_limit_bytes_ == 0U)
+    {
+        return;
+    }
+
+    auto peers = std::vector<std::shared_ptr<tr_peerIo>>{};
+    appendPeers(peers);
+
+    auto nonforce_piece_peers = std::vector<tr_peerIo*>{};
+    auto any_force_write_polling = false;
+
+    for (auto const& io : peers)
+    {
+        if (io->priority() == TR_PRI_FORCE)
+        {
+            any_force_write_polling |= io->is_write_polling_enabled();
+            continue;
+        }
+
+        if (io->queued_outgoing_bytes().piece_bytes > 0U)
+        {
+            nonforce_piece_peers.push_back(io.get());
+        }
+    }
+
+    if (any_force_write_polling || std::empty(nonforce_piece_peers))
+    {
+        return;
+    }
+
+    auto const late_borrow_budget = std::min(
+        this->band_[TR_UP].bytes_left_,
+        current_pulse_upload_limit_bytes_ * LateAsyncBorrowPercent / 100U);
+
+    if (late_borrow_budget == 0U)
+    {
+        return;
+    }
+
+    setAsyncUploadPieceSpilloverBudget(late_borrow_budget);
+    late_nonforce_async_borrow_opened_ = true;
+
+    for (auto* io : nonforce_piece_peers)
+    {
+        if (io->has_bandwidth_left(TR_UP))
+        {
+            io->set_enabled(TR_UP, true);
+        }
+    }
+}
+
+void tr_bandwidth::revokeLateNonForceAsyncBorrow(tr_priority_t peer_priority) noexcept
+{
+    if (peer_priority != TR_PRI_FORCE)
+    {
+        return;
+    }
+
+    if (this->parent_ != nullptr)
+    {
+        if (this->band_[TR_UP].honor_parent_limits_)
+        {
+            this->parent_->revokeLateNonForceAsyncBorrow(peer_priority);
+        }
+
+        return;
+    }
+
+    if (!late_nonforce_async_borrow_opened_ || !enforce_async_upload_piece_spillover_budget_)
+    {
+        return;
+    }
+
+    clearAsyncUploadPieceSpilloverBudget();
+
+    auto peers = std::vector<std::shared_ptr<tr_peerIo>>{};
+    appendPeers(peers);
+
+    for (auto const& io : peers)
+    {
+        if (io->priority() != TR_PRI_FORCE)
+        {
+            io->set_enabled(TR_UP, false);
+        }
+    }
+}
 void tr_bandwidth::notifyBandwidthConsumed(tr_direction dir, size_t byte_count, bool is_piece_data, uint64_t now)
 {
     auto peer_priority = this->priority_;
