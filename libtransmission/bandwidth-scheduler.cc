@@ -82,9 +82,8 @@ class tr_strict_bandwidth_scheduler final : public tr_bandwidth_scheduler
 {
 private:
     using PeerRef = std::shared_ptr<tr_peerIo>;
-    using PeerList = std::vector<tr_peerIo*>;
-    using PeerPriorityArrays = std::array<PeerList, 3>;
     using SeedBuckets = std::array<std::vector<PeerRef>, 3>;
+    using ReadQueues = std::array<std::deque<PeerRef>, 3>;
     using WriteQueues = std::array<std::deque<PeerRef>, 3>;
 
     static auto constexpr Increment = size_t{ 3000U };
@@ -100,11 +99,8 @@ public:
         auto refs = std::vector<PeerRef>{};
         session_.top_bandwidth_.allocatePulse(period_msec, refs);
 
-        auto peer_arrays = build_legacy_priority_arrays(refs);
-        for (auto& peers : peer_arrays)
-        {
-            phase_one(peers, TR_DOWN);
-        }
+        seed_reads_from_pulse(refs);
+        drain_reads();
 
         for (auto const& io : refs)
         {
@@ -117,7 +113,8 @@ public:
 
     void on_can_read(tr_peerIo& io) override
     {
-        io.execute_can_read();
+        enqueue_read(io);
+        drain_reads();
     }
 
     void on_can_write(tr_peerIo& io) override
@@ -138,57 +135,32 @@ public:
     }
 
 private:
-    [[nodiscard]] static PeerPriorityArrays build_legacy_priority_arrays(std::vector<PeerRef> const& refs)
+    [[nodiscard]] static auto shuffle_seed_bucket(SeedBuckets bucket)
     {
-        auto peer_arrays = PeerPriorityArrays{};
-        auto& high = peer_arrays[0];
-        auto& normal = peer_arrays[1];
-        auto& low = peer_arrays[2];
+        static thread_local auto urbg = tr_urbg<size_t>{};
 
+        std::shuffle(std::begin(bucket[0]), std::end(bucket[0]), urbg);
+        std::shuffle(std::begin(bucket[1]), std::end(bucket[1]), urbg);
+        std::shuffle(std::begin(bucket[2]), std::end(bucket[2]), urbg);
+        return bucket;
+    }
+
+    void seed_reads_from_pulse(std::vector<PeerRef> const& refs)
+    {
+        auto buckets = SeedBuckets{};
         for (auto const& io : refs)
         {
-            switch (io->priority())
+            if (!io->is_utp() && io->has_bandwidth_left(TR_DOWN))
             {
-            case TR_PRI_HIGH:
-                high.push_back(io.get());
-                [[fallthrough]];
-
-            case TR_PRI_NORMAL:
-                normal.push_back(io.get());
-                [[fallthrough]];
-
-            case TR_PRI_LOW:
-                low.push_back(io.get());
-                break;
-
-            default:
-                TR_ASSERT_MSG(false, "invalid priority");
-                break;
+                buckets[priority_index(io->priority())].push_back(io);
             }
         }
 
-        return peer_arrays;
-    }
-
-    static void phase_one(std::vector<tr_peerIo*>& peers, tr_direction dir)
-    {
-        static thread_local auto urbg = tr_urbg<size_t>{};
-        std::shuffle(std::begin(peers), std::end(peers), urbg);
-
-        for (size_t n_unfinished = std::size(peers); n_unfinished > 0U;)
+        for (auto& bucket : shuffle_seed_bucket(std::move(buckets)))
         {
-            for (size_t i = 0U; i < n_unfinished;)
+            for (auto& io : bucket)
             {
-                auto const bytes_used = peers[i]->flush(dir, Increment);
-                if (bytes_used != Increment)
-                {
-                    std::swap(peers[i], peers[n_unfinished - 1U]);
-                    --n_unfinished;
-                }
-                else
-                {
-                    ++i;
-                }
+                enqueue_read(std::move(io));
             }
         }
     }
@@ -204,15 +176,33 @@ private:
             }
         }
 
-        static thread_local auto urbg = tr_urbg<size_t>{};
-        for (auto& bucket : buckets)
+        for (auto& bucket : shuffle_seed_bucket(std::move(buckets)))
         {
-            std::shuffle(std::begin(bucket), std::end(bucket), urbg);
             for (auto& io : bucket)
             {
                 enqueue_write(std::move(io));
             }
         }
+    }
+
+    void enqueue_read(tr_peerIo& io)
+    {
+        if (!io.is_utp() && io.has_bandwidth_left(TR_DOWN))
+        {
+            enqueue_read(io.shared_from_this());
+        }
+    }
+
+    void enqueue_read(PeerRef io)
+    {
+        TR_ASSERT(io != nullptr);
+
+        if (!queued_reads_.emplace(io.get()).second)
+        {
+            return;
+        }
+
+        read_queues_[priority_index(io->priority())].push_back(std::move(io));
     }
 
     void enqueue_write(tr_peerIo& io)
@@ -235,6 +225,19 @@ private:
         write_queues_[priority_index(io->priority())].push_back(std::move(io));
     }
 
+    [[nodiscard]] auto* next_read_queue() noexcept
+    {
+        for (auto& queue : read_queues_)
+        {
+            if (!std::empty(queue))
+            {
+                return &queue;
+            }
+        }
+
+        return static_cast<std::deque<PeerRef>*>(nullptr);
+    }
+
     [[nodiscard]] auto* next_write_queue() noexcept
     {
         for (auto& queue : write_queues_)
@@ -246,6 +249,38 @@ private:
         }
 
         return static_cast<std::deque<PeerRef>*>(nullptr);
+    }
+
+    void drain_reads()
+    {
+        if (is_draining_reads_)
+        {
+            return;
+        }
+
+        is_draining_reads_ = true;
+
+        for (;;)
+        {
+            auto* const queue = next_read_queue();
+            if (queue == nullptr)
+            {
+                break;
+            }
+
+            auto io = std::move(queue->front());
+            queue->pop_front();
+            queued_reads_.erase(io.get());
+
+            auto const bytes_read = io->flush(TR_DOWN, Increment);
+
+            if (bytes_read == Increment && io->has_bandwidth_left(TR_DOWN))
+            {
+                enqueue_read(std::move(io));
+            }
+        }
+
+        is_draining_reads_ = false;
     }
 
     void drain_writes()
@@ -283,8 +318,11 @@ private:
 
 private:
     tr_session& session_;
+    ReadQueues read_queues_ = {};
     WriteQueues write_queues_ = {};
+    std::unordered_set<tr_peerIo*> queued_reads_;
     std::unordered_set<tr_peerIo*> queued_writes_;
+    bool is_draining_reads_ = false;
     bool is_draining_writes_ = false;
 };
 
