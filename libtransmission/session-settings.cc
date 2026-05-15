@@ -3,6 +3,8 @@
 // or any future license endorsed by Mnemosyne LLC.
 // License text can be found in the licenses/ folder.
 
+#include <type_traits>
+
 #include <fmt/format.h>
 
 #include "transmission.h"
@@ -15,7 +17,19 @@ void tr_session_settings::load(tr_variant* src)
 #define V(key, field, type, default_value, comment) \
     if (auto* const child = tr_variantDictFind(src, key); child != nullptr) \
     { \
-        if (auto val = libtransmission::VariantConverter::load<decltype(field)>(child); val) \
+        if constexpr (std::is_same_v<type, tr_bandwidth_allocator_mode>) \
+        { \
+            if (auto val = libtransmission::VariantConverter::load<type>(child); val) \
+            { \
+                this->field = *val; \
+            } \
+            else \
+            { \
+                tr_logAddWarn("Invalid 'bandwidth_allocator' setting; using 'default'"); \
+                this->field = tr_bandwidth_allocator_mode::Default; \
+            } \
+        } \
+        else if (auto val = libtransmission::VariantConverter::load<type>(child); val) \
         { \
             this->field = *val; \
         } \

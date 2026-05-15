@@ -7,6 +7,7 @@
 
 #include "transmission.h"
 
+#include "bandwidth.h" // for tr_bandwidth_allocator_mode
 #include "log.h" // for tr_log_level
 #include "net.h" // for tr_port
 #include "utils.h" // for tr_strvStrip(), tr_strlower()
@@ -16,6 +17,11 @@ using namespace std::literals;
 
 namespace
 {
+auto constexpr BandwidthAllocatorKeys = std::array<std::pair<std::string_view, tr_bandwidth_allocator_mode>, 2>{ {
+    { "default", tr_bandwidth_allocator_mode::Default },
+    { "strict", tr_bandwidth_allocator_mode::Strict },
+} };
+
 auto constexpr EncryptionKeys = std::array<std::pair<std::string_view, tr_encryption_mode>, 3>{ {
     { "required", TR_ENCRYPTION_REQUIRED },
     { "preferred", TR_ENCRYPTION_PREFERRED },
@@ -82,6 +88,55 @@ template<>
 void VariantConverter::save<double>(tr_variant* tgt, double const& val)
 {
     tr_variantInitReal(tgt, val);
+}
+
+// ---
+
+template<>
+std::optional<tr_bandwidth_allocator_mode> VariantConverter::load<tr_bandwidth_allocator_mode>(tr_variant* src)
+{
+    static constexpr auto& Keys = BandwidthAllocatorKeys;
+
+    if (auto val = std::string_view{}; tr_variantGetStrView(src, &val))
+    {
+        auto const needle = tr_strlower(tr_strvStrip(val));
+
+        for (auto const& [name, mode] : Keys)
+        {
+            if (name == needle)
+            {
+                return mode;
+            }
+        }
+    }
+
+    if (auto val = int64_t{}; tr_variantGetInt(src, &val))
+    {
+        for (auto const& [name, mode] : Keys)
+        {
+            if (static_cast<int64_t>(mode) == val)
+            {
+                return mode;
+            }
+        }
+    }
+
+    return {};
+}
+
+template<>
+void VariantConverter::save<tr_bandwidth_allocator_mode>(tr_variant* tgt, tr_bandwidth_allocator_mode const& val)
+{
+    for (auto const& [key, mode] : BandwidthAllocatorKeys)
+    {
+        if (mode == val)
+        {
+            tr_variantInitStrView(tgt, key);
+            return;
+        }
+    }
+
+    tr_variantInitInt(tgt, static_cast<int64_t>(val));
 }
 
 // ---

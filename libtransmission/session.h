@@ -697,6 +697,11 @@ public:
         return settings_.encryption_mode;
     }
 
+    [[nodiscard]] constexpr auto bandwidthAllocator() const noexcept
+    {
+        return settings_.bandwidth_allocator_mode;
+    }
+
     [[nodiscard]] constexpr auto preallocationMode() const noexcept
     {
         return settings_.preallocation_mode;
