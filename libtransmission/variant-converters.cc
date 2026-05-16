@@ -22,6 +22,12 @@ auto constexpr BandwidthAllocatorKeys = std::array<std::pair<std::string_view, t
     { "strict", tr_bandwidth_allocator_mode::Strict },
 } };
 
+auto constexpr StrictBandwidthCurveKeys = std::array<std::pair<std::string_view, tr_strict_bandwidth_curve>, 3>{ {
+    { "relaxed", tr_strict_bandwidth_curve::Relaxed },
+    { "balanced", tr_strict_bandwidth_curve::Balanced },
+    { "aggressive", tr_strict_bandwidth_curve::Aggressive },
+} };
+
 auto constexpr EncryptionKeys = std::array<std::pair<std::string_view, tr_encryption_mode>, 3>{ {
     { "required", TR_ENCRYPTION_REQUIRED },
     { "preferred", TR_ENCRYPTION_PREFERRED },
@@ -130,6 +136,55 @@ void VariantConverter::save<tr_bandwidth_allocator_mode>(tr_variant* tgt, tr_ban
     for (auto const& [key, mode] : BandwidthAllocatorKeys)
     {
         if (mode == val)
+        {
+            tr_variantInitStrView(tgt, key);
+            return;
+        }
+    }
+
+    tr_variantInitInt(tgt, static_cast<int64_t>(val));
+}
+
+// ---
+
+template<>
+std::optional<tr_strict_bandwidth_curve> VariantConverter::load<tr_strict_bandwidth_curve>(tr_variant* src)
+{
+    static constexpr auto& Keys = StrictBandwidthCurveKeys;
+
+    if (auto val = std::string_view{}; tr_variantGetStrView(src, &val))
+    {
+        auto const needle = tr_strlower(tr_strvStrip(val));
+
+        for (auto const& [name, preset] : Keys)
+        {
+            if (name == needle)
+            {
+                return preset;
+            }
+        }
+    }
+
+    if (auto val = int64_t{}; tr_variantGetInt(src, &val))
+    {
+        for (auto const& [name, preset] : Keys)
+        {
+            if (static_cast<int64_t>(preset) == val)
+            {
+                return preset;
+            }
+        }
+    }
+
+    return {};
+}
+
+template<>
+void VariantConverter::save<tr_strict_bandwidth_curve>(tr_variant* tgt, tr_strict_bandwidth_curve const& val)
+{
+    for (auto const& [key, preset] : StrictBandwidthCurveKeys)
+    {
+        if (preset == val)
         {
             tr_variantInitStrView(tgt, key);
             return;

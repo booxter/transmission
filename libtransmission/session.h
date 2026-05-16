@@ -708,6 +708,11 @@ public:
         return settings_.bandwidth_allocator_mode;
     }
 
+    [[nodiscard]] constexpr auto strictBandwidthCurve() const noexcept
+    {
+        return settings_.bandwidth_strict_limited_curve;
+    }
+
     [[nodiscard]] constexpr auto preallocationMode() const noexcept
     {
         return settings_.preallocation_mode;

@@ -36,6 +36,20 @@ void load_session_setting<tr_bandwidth_allocator_mode>(tr_bandwidth_allocator_mo
     }
 }
 
+template<>
+void load_session_setting<tr_strict_bandwidth_curve>(tr_strict_bandwidth_curve& field, tr_variant* src)
+{
+    if (auto val = libtransmission::VariantConverter::load<tr_strict_bandwidth_curve>(src); val)
+    {
+        field = *val;
+    }
+    else
+    {
+        tr_logAddWarn("Invalid 'bandwidth_strict_limited_curve' setting; using 'balanced'");
+        field = tr_strict_bandwidth_curve::Balanced;
+    }
+}
+
 } // namespace
 
 void tr_session_settings::load(tr_variant* src)

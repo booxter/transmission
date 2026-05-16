@@ -213,6 +213,86 @@ TEST_F(SettingsTest, invalidBandwidthAllocatorFallsBackToDefaultAndWarns)
     EXPECT_TRUE(warned);
 }
 
+TEST_F(SettingsTest, canLoadStrictBandwidthCurve)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_strict_limited_curve;
+    static auto constexpr ExpectedValue = tr_strict_bandwidth_curve::Aggressive;
+
+    auto settings = std::make_unique<tr_session_settings>();
+    ASSERT_NE(ExpectedValue, settings->bandwidth_strict_limited_curve);
+
+    auto dict = tr_variant{};
+    tr_variantInitDict(&dict, 1);
+    tr_variantDictAddInt(&dict, Key, static_cast<int64_t>(ExpectedValue));
+    settings->load(&dict);
+    tr_variantClear(&dict);
+    EXPECT_EQ(ExpectedValue, settings->bandwidth_strict_limited_curve);
+
+    settings = std::make_unique<tr_session_settings>();
+    tr_variantInitDict(&dict, 1);
+    tr_variantDictAddStrView(&dict, Key, "aggressive");
+    settings->load(&dict);
+    tr_variantClear(&dict);
+    EXPECT_EQ(ExpectedValue, settings->bandwidth_strict_limited_curve);
+}
+
+TEST_F(SettingsTest, canSaveStrictBandwidthCurve)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_strict_limited_curve;
+    static auto constexpr ChangedValue = tr_strict_bandwidth_curve::Relaxed;
+
+    auto settings = tr_session_settings{};
+    ASSERT_NE(ChangedValue, settings.bandwidth_strict_limited_curve);
+
+    settings.bandwidth_strict_limited_curve = ChangedValue;
+    auto dict = tr_variant{};
+    tr_variantInitDict(&dict, 100);
+    settings.save(&dict);
+    auto val = std::string_view{};
+    ASSERT_TRUE(tr_variantDictFindStrView(&dict, Key, &val));
+    EXPECT_EQ("relaxed"sv, val);
+    tr_variantClear(&dict);
+}
+
+TEST_F(SettingsTest, invalidStrictBandwidthCurveFallsBackToBalancedAndWarns)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_strict_limited_curve;
+
+    auto const old_level = tr_logGetLevel();
+    auto const old_queue_enabled = tr_logGetQueueEnabled();
+    tr_logSetLevel(TR_LOG_WARN);
+    tr_logSetQueueEnabled(true);
+    tr_logFreeQueue(tr_logGetQueue());
+
+    auto settings = tr_session_settings{};
+    settings.bandwidth_strict_limited_curve = tr_strict_bandwidth_curve::Aggressive;
+
+    auto dict = tr_variant{};
+    tr_variantInitDict(&dict, 1);
+    tr_variantDictAddStrView(&dict, Key, "bogus");
+    settings.load(&dict);
+    tr_variantClear(&dict);
+
+    auto* const msgs = tr_logGetQueue();
+    auto warned = false;
+    for (auto* msg = msgs; msg != nullptr; msg = msg->next)
+    {
+        if (msg->level == TR_LOG_WARN &&
+            msg->message.find("Invalid 'bandwidth_strict_limited_curve' setting") != std::string::npos)
+        {
+            warned = true;
+            break;
+        }
+    }
+
+    tr_logFreeQueue(msgs);
+    tr_logSetQueueEnabled(old_queue_enabled);
+    tr_logSetLevel(old_level);
+
+    EXPECT_EQ(tr_strict_bandwidth_curve::Balanced, settings.bandwidth_strict_limited_curve);
+    EXPECT_TRUE(warned);
+}
+
 TEST_F(SettingsTest, canLoadLogLevel)
 {
     static auto constexpr Key = TR_KEY_message_level;

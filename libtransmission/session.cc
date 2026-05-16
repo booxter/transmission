@@ -686,7 +686,8 @@ void tr_session::setSettings(tr_session_settings&& settings_in, bool force)
     // the rest of the func is session_ responding to settings changes
 
     if (force || bandwidth_scheduler_ == nullptr ||
-        new_settings.bandwidth_allocator_mode != old_settings.bandwidth_allocator_mode)
+        new_settings.bandwidth_allocator_mode != old_settings.bandwidth_allocator_mode ||
+        new_settings.bandwidth_strict_limited_curve != old_settings.bandwidth_strict_limited_curve)
     {
         bandwidth_scheduler_ = tr_bandwidth_scheduler::create(*this);
     }
@@ -1410,9 +1411,10 @@ void session_load_torrents(tr_session* session, tr_ctor* ctor, std::promise<size
 
     if (n_torrents != 0U)
     {
-        tr_logAddInfo(fmt::format(
-            tr_ngettext("Loaded {count} torrent", "Loaded {count} torrents", n_torrents),
-            fmt::arg("count", n_torrents)));
+        tr_logAddInfo(
+            fmt::format(
+                tr_ngettext("Loaded {count} torrent", "Loaded {count} torrents", n_torrents),
+                fmt::arg("count", n_torrents)));
     }
 
     loaded_promise->set_value(n_torrents);

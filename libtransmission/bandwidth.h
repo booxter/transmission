@@ -41,6 +41,13 @@ enum class tr_bandwidth_allocator_mode : uint8_t
     Strict,
 };
 
+enum class tr_strict_bandwidth_curve : uint8_t
+{
+    Relaxed,
+    Balanced,
+    Aggressive,
+};
+
 /**
  * `tr_bandwidth` is an object for measuring and constraining bandwidth speeds.
  *
