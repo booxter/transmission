@@ -81,6 +81,40 @@ protected:
         return READ_LATER;
     }
 
+    struct ReadToWriteCapture
+    {
+        std::string_view trigger;
+        std::string_view response;
+        size_t bytes = 0U;
+        bool matches = true;
+        bool wrote = false;
+    };
+
+    static ReadState drainReadsAndQueueWrite(tr_peerIo* io, void* user_data, size_t* piece)
+    {
+        auto* const capture = static_cast<ReadToWriteCapture*>(user_data);
+        auto const n_available = io->read_buffer_size();
+
+        if (capture != nullptr)
+        {
+            auto const offset = std::min(capture->bytes, std::size(capture->trigger));
+            auto const expected = capture->trigger.substr(offset, n_available);
+            capture->matches = capture->matches && io->read_buffer_starts_with(expected);
+            capture->bytes += n_available;
+        }
+
+        io->read_buffer_drain(n_available);
+        *piece = 0U;
+
+        if (capture != nullptr && !capture->wrote)
+        {
+            io->write_bytes(std::data(capture->response), std::size(capture->response), true);
+            capture->wrote = true;
+        }
+
+        return READ_LATER;
+    }
+
     struct ReadCapture
     {
         std::string_view expected;
@@ -353,12 +387,10 @@ TEST_F(StrictBandwidthSchedulerTest, writableCallbackPreemptsQueuedLowPriorityWr
             session_->bandwidthScheduler().on_pulse(PulseMsec);
 
             low_io->write_bytes(std::data(low_payload), std::size(low_payload), true);
-            session_->bandwidthScheduler().on_outbuf_ready(*low_io);
             low_before_high = std::size(readAvailable(low_sock));
             EXPECT_TRUE(readAvailable(high_sock).empty());
 
             high_io->write_bytes(std::data(high_payload), std::size(high_payload), true);
-            session_->bandwidthScheduler().on_outbuf_ready(*high_io);
 
             high_total = std::size(readAvailable(high_sock));
             low_total = low_before_high.load() + std::size(readAvailable(low_sock));
@@ -435,6 +467,49 @@ TEST_F(StrictBandwidthSchedulerTest, readableCallbackPreemptsQueuedLowPriorityRe
 
     tr_net_close_socket(high_sock);
     tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, readableCallbackQueuesWriterImmediately)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.setPriority(TR_PRI_HIGH);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const high_trigger = std::string(PayloadSize, 'R');
+    auto const high_payload = std::string(PayloadSize, 'H');
+    auto capture = ReadToWriteCapture{ high_trigger, high_payload };
+    auto done = std::atomic_bool{ false };
+    auto high_total = std::atomic_size_t{ 0U };
+    auto high_matches = std::atomic_bool{ false };
+
+    session_->runInSessionThread(
+        [&]()
+        {
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            high_io->set_callbacks(&drainReadsAndQueueWrite, nullptr, nullptr, &capture);
+
+            EXPECT_TRUE(readAvailable(high_sock).empty());
+            EXPECT_TRUE(writeAll(high_sock, high_trigger));
+            session_->bandwidthScheduler().on_can_read(*high_io);
+
+            auto const received = readAvailable(high_sock);
+            high_total = std::size(received);
+            high_matches = received == high_payload && capture.matches && capture.wrote;
+
+            high_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_EQ(std::size(high_payload), high_total.load());
+    EXPECT_TRUE(high_matches.load());
+
+    tr_net_close_socket(high_sock);
 }
 
 TEST_F(StrictBandwidthSchedulerTest, limitedWriterRetentionPreservesBudgetForLateHighWriter)
