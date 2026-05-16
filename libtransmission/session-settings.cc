@@ -3,8 +3,6 @@
 // or any future license endorsed by Mnemosyne LLC.
 // License text can be found in the licenses/ folder.
 
-#include <type_traits>
-
 #include <fmt/format.h>
 
 #include "transmission.h"
@@ -12,27 +10,40 @@
 #include "session-settings.h"
 #include "variant.h"
 
+namespace
+{
+
+template<typename T>
+void load_session_setting(T& field, tr_variant* src)
+{
+    if (auto val = libtransmission::VariantConverter::load<T>(src); val)
+    {
+        field = *val;
+    }
+}
+
+template<>
+void load_session_setting<tr_bandwidth_allocator_mode>(tr_bandwidth_allocator_mode& field, tr_variant* src)
+{
+    if (auto val = libtransmission::VariantConverter::load<tr_bandwidth_allocator_mode>(src); val)
+    {
+        field = *val;
+    }
+    else
+    {
+        tr_logAddWarn("Invalid 'bandwidth_allocator' setting; using 'default'");
+        field = tr_bandwidth_allocator_mode::Default;
+    }
+}
+
+} // namespace
+
 void tr_session_settings::load(tr_variant* src)
 {
 #define V(key, field, type, default_value, comment) \
     if (auto* const child = tr_variantDictFind(src, key); child != nullptr) \
     { \
-        if constexpr (std::is_same_v<type, tr_bandwidth_allocator_mode>) \
-        { \
-            if (auto val = libtransmission::VariantConverter::load<type>(child); val) \
-            { \
-                this->field = *val; \
-            } \
-            else \
-            { \
-                tr_logAddWarn("Invalid 'bandwidth_allocator' setting; using 'default'"); \
-                this->field = tr_bandwidth_allocator_mode::Default; \
-            } \
-        } \
-        else if (auto val = libtransmission::VariantConverter::load<type>(child); val) \
-        { \
-            this->field = *val; \
-        } \
+        load_session_setting(this->field, child); \
     }
     SESSION_SETTINGS_FIELDS(V)
 #undef V
