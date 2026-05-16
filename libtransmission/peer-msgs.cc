@@ -1321,12 +1321,22 @@ void prefetchPieces(tr_peerMsgsImpl* msgs)
     return true;
 }
 
+size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_msec);
+
+void fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_msec)
+{
+    while (fillOutputBufferImpl(msgs, now_sec, now_msec) != 0U)
+    {
+    }
+}
+
 void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
 {
     if (canAddRequestFromPeer(msgs, *req))
     {
         msgs->peer_requested_.emplace_back(*req);
         prefetchPieces(msgs);
+        fillOutputBuffer(msgs, tr_time(), tr_time_msec());
     }
     else if (msgs->io->supports_fext())
     {
@@ -1897,7 +1907,7 @@ void updateBlockRequests(tr_peerMsgsImpl* msgs)
     }
 }
 
-size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
+size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_msec)
 {
     size_t bytes_written = 0;
     struct peer_request req;
@@ -1909,15 +1919,15 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
     if (have_messages && msgs->outMessagesBatchedAt == 0) /* fresh batch */
     {
         logtrace(msgs, fmt::format(FMT_STRING("started an outMessages batch (length is {:d})"), std::size(msgs->outMessages)));
-        msgs->outMessagesBatchedAt = now;
+        msgs->outMessagesBatchedAt = now_sec;
     }
-    else if (have_messages && now - msgs->outMessagesBatchedAt >= msgs->outMessagesBatchPeriod)
+    else if (have_messages && now_sec - msgs->outMessagesBatchedAt >= msgs->outMessagesBatchPeriod)
     {
         auto const len = std::size(msgs->outMessages);
         /* flush the protocol messages */
         logtrace(msgs, fmt::format(FMT_STRING("flushing outMessages... to {:p} (length is {:d})"), fmt::ptr(msgs->io), len));
         msgs->io->write(msgs->outMessages, false);
-        msgs->clientSentAnythingAt = now;
+        msgs->clientSentAnythingAt = now_sec;
         msgs->outMessagesBatchedAt = 0;
         msgs->outMessagesBatchPeriod = LowPriorityIntervalSecs;
         bytes_written += len;
@@ -1926,7 +1936,7 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
     // --- Metadata Pieces
 
     if (auto piece = int{};
-        msgs->io->get_write_buffer_space(now) >= METADATA_PIECE_SIZE && popNextMetadataRequest(msgs, &piece))
+        msgs->io->get_write_buffer_space(now_msec) >= METADATA_PIECE_SIZE && popNextMetadataRequest(msgs, &piece))
     {
         auto ok = bool{ false };
 
@@ -1981,7 +1991,7 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
 
     // --- Data Blocks
 
-    if (msgs->io->get_write_buffer_space(now) >= tr_block_info::BlockSize && !std::empty(msgs->peer_requested_))
+    if (msgs->io->get_write_buffer_space(now_msec) >= tr_block_info::BlockSize && !std::empty(msgs->peer_requested_))
     {
         req = msgs->peer_requested_.front();
         msgs->peer_requested_.erase(std::begin(msgs->peer_requested_));
@@ -2030,7 +2040,7 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
                 TR_ASSERT(n == msglen);
                 msgs->io->write(out, true);
                 bytes_written += n;
-                msgs->clientSentAnythingAt = now;
+                msgs->clientSentAnythingAt = now_sec;
                 msgs->blocks_sent_to_peer.add(tr_time(), 1);
             }
 
@@ -2053,7 +2063,7 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
 
     // --- Keepalive
 
-    if (msgs != nullptr && msgs->clientSentAnythingAt != 0 && now - msgs->clientSentAnythingAt > KeepaliveIntervalSecs)
+    if (msgs != nullptr && msgs->clientSentAnythingAt != 0 && now_sec - msgs->clientSentAnythingAt > KeepaliveIntervalSecs)
     {
         logtrace(msgs, "sending a keepalive message");
         msgs->outMessages.add_uint32(0);
@@ -2066,19 +2076,13 @@ size_t fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now)
 void peerPulse(void* vmsgs)
 {
     auto* msgs = static_cast<tr_peerMsgsImpl*>(vmsgs);
-    time_t const now = tr_time();
+    time_t const now_sec = tr_time();
+    uint64_t const now_msec = tr_time_msec();
 
     updateDesiredRequestCount(msgs);
     updateBlockRequests(msgs);
-    updateMetadataRequests(msgs, now);
-
-    for (;;)
-    {
-        if (fillOutputBuffer(msgs, now) < 1)
-        {
-            break;
-        }
-    }
+    updateMetadataRequests(msgs, now_sec);
+    fillOutputBuffer(msgs, now_sec, now_msec);
 }
 
 void gotError(tr_peerIo* /*io*/, tr_error const& /*error*/, void* vmsgs)
