@@ -547,6 +547,8 @@ The scheduler loop would need to handle three outcomes when lower-priority work 
 - not eligible yet, but will become eligible later in this pulse: arm a timer for the next eligibility point
 - no more pulse time left: stop and wait for the next pulse
 
+The release model should not wake lower-priority work byte-by-byte. That would create too many scheduler wakeups and tiny I/O attempts. The first implementation should therefore release lower-priority work in bounded piece-data quanta while still charging exact piece bytes against the protected budget. The current target is a fixed `1024`-byte retention quantum, with the final partial quantum released near the end of the pulse.
+
 This means lower-priority gating cannot rely only on the current zero-delay continuation timer. It needs a real wakeup time tied to the release model so that queued lower-priority work neither spins nor stalls indefinitely.
 
 The scheduler should reuse its existing scheduler-owned one-shot timer for this purpose rather than introducing a second timer. The same timer should handle both:

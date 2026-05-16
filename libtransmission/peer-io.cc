@@ -98,6 +98,7 @@ std::shared_ptr<tr_peerIo> tr_peerIo::create(
     auto lock = session->unique_lock();
 
     auto io = std::make_shared<tr_peerIo>(session, info_hash, is_incoming, is_seed, parent);
+    io->self_ = io;
     io->bandwidth().setPeer(io);
     io->flush_outbuf_trigger_->setCallback(
         [weak = io->weak_from_this()]
@@ -264,7 +265,7 @@ bool tr_peerIo::reconnect()
 
 size_t tr_peerIo::did_write_wrapper(size_t bytes_transferred)
 {
-    auto const keep_alive = shared_from_this();
+    auto const keep_alive = self();
     auto piece_bytes = size_t{ 0U };
 
     while (bytes_transferred != 0 && !std::empty(outbuf_info_))
@@ -388,7 +389,7 @@ size_t tr_peerIo::can_read_wrapper()
     }
 
     auto const lock = session_->unique_lock();
-    auto const keep_alive = shared_from_this();
+    auto const keep_alive = self();
 
     auto const now = tr_time_msec();
     auto done = bool{ false };
@@ -620,10 +621,18 @@ tr_peerIo::FlushResult tr_peerIo::flush_with_result(tr_direction dir, size_t lim
 
 size_t tr_peerIo::flush_outgoing_protocol_msgs()
 {
-    size_t byte_count = 0;
+    return flush(TR_UP, pending_protocol_output_size());
+}
 
-    /* count up how many bytes are used by non-piece-data messages
-       at the front of our outbound queue */
+bool tr_peerIo::has_pending_protocol_output() const noexcept
+{
+    return !std::empty(outbuf_info_) && !outbuf_info_.front().second;
+}
+
+size_t tr_peerIo::pending_protocol_output_size() const noexcept
+{
+    auto byte_count = size_t{ 0U };
+
     for (auto const& [n_bytes, is_piece_data] : outbuf_info_)
     {
         if (is_piece_data)
@@ -634,12 +643,7 @@ size_t tr_peerIo::flush_outgoing_protocol_msgs()
         byte_count += n_bytes;
     }
 
-    return flush(TR_UP, byte_count);
-}
-
-bool tr_peerIo::has_pending_protocol_output() const noexcept
-{
-    return !std::empty(outbuf_info_) && !outbuf_info_.front().second;
+    return byte_count;
 }
 
 void tr_peerIo::flush_outbuf_soon()
@@ -841,7 +845,7 @@ void tr_peerIo::utp_init([[maybe_unused]] struct_utp_context* ctx)
                 // The peer io object can destruct inside can_read_wrapper(), so keep
                 // it alive for the duration of this code block. This can happen when
                 // a BT handshake did not complete successfully for example.
-                auto const keep_alive = io->shared_from_this();
+                auto const keep_alive = io->self();
 
                 if (io->is_cleared())
                 {

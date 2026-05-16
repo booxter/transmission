@@ -69,6 +69,18 @@ protected:
         return READ_LATER;
     }
 
+    static ReadState clearIoAndPauseRead(tr_peerIo* io, void* user_data, size_t* piece)
+    {
+        if (auto* const called = static_cast<std::atomic_bool*>(user_data); called != nullptr)
+        {
+            *called = true;
+        }
+
+        *piece = 0U;
+        io->clear();
+        return READ_LATER;
+    }
+
     struct ReadCapture
     {
         std::string_view expected;
@@ -289,7 +301,6 @@ TEST_F(StrictBandwidthSchedulerTest, writableCallbackPreemptsQueuedLowPriorityWr
     auto [high_io, high_sock] = createIncomingIo(&high_parent);
     auto [low_io, low_sock] = createIncomingIo(&low_parent);
 
-    static auto constexpr UploadBytesPerSecond = uint64_t{ 900000U };
     static auto constexpr PulseMsec = uint64_t{ 500U };
     static auto constexpr LargePayloadSize = size_t{ 450000U };
     static auto constexpr SmallPayloadSize = size_t{ 3000U };
@@ -304,10 +315,6 @@ TEST_F(StrictBandwidthSchedulerTest, writableCallbackPreemptsQueuedLowPriorityWr
     session_->runInSessionThread(
         [&]()
         {
-            session_->top_bandwidth_.setLimited(TR_UP, true);
-            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
-                TR_UP,
-                static_cast<tr_bytes_per_second_t>(UploadBytesPerSecond));
             session_->bandwidthScheduler().on_pulse(PulseMsec);
 
             low_io->write_bytes(std::data(low_payload), std::size(low_payload), true);
@@ -347,7 +354,6 @@ TEST_F(StrictBandwidthSchedulerTest, readableCallbackPreemptsQueuedLowPriorityRe
     auto [high_io, high_sock] = createIncomingIo(&high_parent);
     auto [low_io, low_sock] = createIncomingIo(&low_parent);
 
-    static auto constexpr DownloadBytesPerSecond = uint64_t{ 900000U };
     static auto constexpr PulseMsec = uint64_t{ 500U };
     static auto constexpr LargePayloadSize = size_t{ 450000U };
     static auto constexpr SmallPayloadSize = size_t{ 3000U };
@@ -363,10 +369,6 @@ TEST_F(StrictBandwidthSchedulerTest, readableCallbackPreemptsQueuedLowPriorityRe
     session_->runInSessionThread(
         [&]()
         {
-            session_->top_bandwidth_.setLimited(TR_DOWN, true);
-            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
-                TR_DOWN,
-                static_cast<tr_bytes_per_second_t>(DownloadBytesPerSecond));
             session_->bandwidthScheduler().on_pulse(PulseMsec);
 
             high_io->set_callbacks(&keepReadsBuffered, nullptr, nullptr, nullptr);
@@ -397,6 +399,370 @@ TEST_F(StrictBandwidthSchedulerTest, readableCallbackPreemptsQueuedLowPriorityRe
     EXPECT_LT(low_total.load(), std::size(low_payload));
 
     tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, limitedWriterRetentionPreservesBudgetForLateHighWriter)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.setPriority(TR_PRI_HIGH);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+    low_io->bandwidth().setPriority(TR_PRI_LOW);
+
+    static auto constexpr UploadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const high_payload = std::string(PayloadSize, 'H');
+    auto const low_payload = std::string(PayloadSize, 'L');
+    auto done = std::atomic_bool{ false };
+    auto low_before_high = std::atomic_size_t{ 0U };
+    auto low_total = std::atomic_size_t{ 0U };
+    auto high_total = std::atomic_size_t{ 0U };
+
+    session_->runInSessionThread(
+        [&]()
+        {
+            session_->top_bandwidth_.setLimited(TR_UP, true);
+            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
+                TR_UP,
+                static_cast<tr_bytes_per_second_t>(UploadBytesPerSecond));
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            low_io->write_bytes(std::data(low_payload), std::size(low_payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*low_io);
+            low_before_high = std::size(readAvailable(low_sock));
+
+            high_io->write_bytes(std::data(high_payload), std::size(high_payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*high_io);
+
+            high_total = std::size(readAvailable(high_sock));
+            low_total = low_before_high.load() + std::size(readAvailable(low_sock));
+
+            high_io->clear();
+            low_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_EQ(0U, low_before_high.load());
+    EXPECT_EQ(std::size(high_payload), high_total.load());
+    EXPECT_EQ(0U, low_total.load());
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, clearedRetainedWriterIsReleasedBeforeDelayedWakeup)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.setPriority(TR_PRI_HIGH);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+    low_io->bandwidth().setPriority(TR_PRI_LOW);
+
+    static auto constexpr UploadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const payload = std::string(PayloadSize, 'L');
+    auto weak_low = std::weak_ptr<tr_peerIo>{};
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            session_->top_bandwidth_.setLimited(TR_UP, true);
+            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
+                TR_UP,
+                static_cast<tr_bytes_per_second_t>(UploadBytesPerSecond));
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            low_io->write_bytes(std::data(payload), std::size(payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*low_io);
+            EXPECT_TRUE(readAvailable(low_sock).empty());
+
+            weak_low = low_io;
+            low_io->clear();
+            low_io.reset();
+        });
+
+    EXPECT_TRUE(weak_low.expired());
+    EXPECT_TRUE(readAvailable(low_sock).empty());
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            high_io->clear();
+            high_io.reset();
+        });
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, clearedRetainedReaderIsReleasedBeforeDelayedWakeup)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.setPriority(TR_PRI_HIGH);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+    low_io->bandwidth().setPriority(TR_PRI_LOW);
+
+    static auto constexpr DownloadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const payload = std::string(PayloadSize, 'L');
+    auto weak_low = std::weak_ptr<tr_peerIo>{};
+    auto callback_called = std::atomic_bool{ false };
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            session_->top_bandwidth_.setLimited(TR_DOWN, true);
+            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
+                TR_DOWN,
+                static_cast<tr_bytes_per_second_t>(DownloadBytesPerSecond));
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            low_io->set_callbacks(&clearIoAndPauseRead, nullptr, nullptr, &callback_called);
+
+            ASSERT_TRUE(writeAll(low_sock, payload));
+            session_->bandwidthScheduler().on_can_read(*low_io);
+            EXPECT_EQ(0U, low_io->read_buffer_size());
+
+            weak_low = low_io;
+            low_io.reset();
+        });
+
+    EXPECT_FALSE(weak_low.expired());
+    EXPECT_TRUE(waitFor([&]() { return callback_called.load(); }, 1000));
+    EXPECT_TRUE(waitFor([&]() { return weak_low.expired(); }, 1000));
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            high_io->clear();
+            high_io.reset();
+        });
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, limitedReaderRetentionPreservesBudgetForLateHighReader)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.setPriority(TR_PRI_HIGH);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+    low_io->bandwidth().setPriority(TR_PRI_LOW);
+
+    static auto constexpr DownloadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const high_payload = std::string(PayloadSize, 'H');
+    auto const low_payload = std::string(PayloadSize, 'L');
+    auto done = std::atomic_bool{ false };
+    auto low_before_high = std::atomic_size_t{ 0U };
+    auto low_total = std::atomic_size_t{ 0U };
+    auto high_total = std::atomic_size_t{ 0U };
+    auto high_matches = std::atomic_bool{ false };
+
+    session_->runInSessionThread(
+        [&]()
+        {
+            session_->top_bandwidth_.setLimited(TR_DOWN, true);
+            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
+                TR_DOWN,
+                static_cast<tr_bytes_per_second_t>(DownloadBytesPerSecond));
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            high_io->set_callbacks(&keepReadsBuffered, nullptr, nullptr, nullptr);
+            low_io->set_callbacks(&keepReadsBuffered, nullptr, nullptr, nullptr);
+
+            EXPECT_TRUE(writeAll(low_sock, low_payload));
+            session_->bandwidthScheduler().on_can_read(*low_io);
+            low_before_high = low_io->read_buffer_size();
+
+            EXPECT_TRUE(writeAll(high_sock, high_payload));
+            session_->bandwidthScheduler().on_can_read(*high_io);
+
+            high_total = high_io->read_buffer_size();
+            high_matches = high_io->read_buffer_starts_with(high_payload);
+            low_total = low_io->read_buffer_size();
+
+            high_io->clear();
+            low_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_EQ(0U, low_before_high.load());
+    EXPECT_EQ(std::size(high_payload), high_total.load());
+    EXPECT_TRUE(high_matches.load());
+    EXPECT_EQ(0U, low_total.load());
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, limitedLowPriorityProtocolWritesBypassPieceRetention)
+{
+    auto normal_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    normal_parent.setPriority(TR_PRI_NORMAL);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+
+    auto [normal_io, normal_sock] = createIncomingIo(&normal_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+    low_io->bandwidth().setPriority(TR_PRI_LOW);
+
+    static auto constexpr UploadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+
+    auto const protocol_payload = std::string(64U, 'P');
+    auto const piece_payload = std::string(3000U, 'L');
+    auto done = std::atomic_bool{ false };
+    auto protocol_bytes = std::atomic_size_t{ 0U };
+    auto protocol_matches = std::atomic_bool{ false };
+
+    session_->runInSessionThread(
+        [&]()
+        {
+            session_->top_bandwidth_.setLimited(TR_UP, true);
+            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
+                TR_UP,
+                static_cast<tr_bytes_per_second_t>(UploadBytesPerSecond));
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            low_io->write_bytes(std::data(protocol_payload), std::size(protocol_payload), false);
+            low_io->write_bytes(std::data(piece_payload), std::size(piece_payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*low_io);
+
+            auto const received = readAvailable(low_sock);
+            protocol_bytes = std::size(received);
+            protocol_matches = received == protocol_payload;
+
+            low_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_EQ(std::size(protocol_payload), protocol_bytes.load());
+    EXPECT_TRUE(protocol_matches.load());
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            normal_io.reset();
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+        });
+    static_cast<void>(readAvailable(low_sock));
+    runInSessionThreadAndWait([&]() { low_io->clear(); });
+
+    tr_net_close_socket(normal_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, limitedSessionRetentionSkipsWritersIgnoringSessionLimit)
+{
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+    low_parent.honorParentLimits(TR_UP, false);
+    low_parent.setLimited(TR_UP, true);
+    low_parent.setDesiredSpeedBytesPerSecond(TR_UP, static_cast<tr_bytes_per_second_t>(6000U));
+
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+    low_io->bandwidth().setPriority(TR_PRI_LOW);
+
+    static auto constexpr UploadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const payload = std::string(PayloadSize, 'L');
+    auto done = std::atomic_bool{ false };
+    auto transferred = std::atomic_size_t{ 0U };
+
+    session_->runInSessionThread(
+        [&]()
+        {
+            session_->top_bandwidth_.setLimited(TR_UP, true);
+            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
+                TR_UP,
+                static_cast<tr_bytes_per_second_t>(UploadBytesPerSecond));
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            low_io->write_bytes(std::data(payload), std::size(payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*low_io);
+            transferred = std::size(readAvailable(low_sock));
+
+            low_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_EQ(std::size(payload), transferred.load());
+
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, limitedLowPriorityWriterEventuallyDrainsWithinPulse)
+{
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+    low_io->bandwidth().setPriority(TR_PRI_LOW);
+
+    static auto constexpr UploadBytesPerSecond = uint64_t{ 6000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 3000U };
+
+    auto const payload = std::string(PayloadSize, 'L');
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            session_->top_bandwidth_.setLimited(TR_UP, true);
+            session_->top_bandwidth_.setDesiredSpeedBytesPerSecond(
+                TR_UP,
+                static_cast<tr_bytes_per_second_t>(UploadBytesPerSecond));
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            low_io->write_bytes(std::data(payload), std::size(payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*low_io);
+        });
+
+    auto low_received = std::string{};
+    EXPECT_TRUE(waitFor(
+        [&]()
+        {
+            low_received += readAvailable(low_sock);
+            return low_received == payload;
+        },
+        1000));
+
+    runInSessionThreadAndWait([&]() { low_io->clear(); });
     tr_net_close_socket(low_sock);
 }
 

@@ -137,12 +137,18 @@ public:
         return outbuf_.size() != 0U;
     }
 
+    [[nodiscard]] auto self() const noexcept
+    {
+        return self_.lock();
+    }
+
     [[nodiscard]] constexpr auto is_cleared() const noexcept
     {
         return is_cleared_;
     }
 
     [[nodiscard]] bool has_pending_protocol_output() const noexcept;
+    [[nodiscard]] size_t pending_protocol_output_size() const noexcept;
 
     // Write all the data from `buf`.
     // This is a destructive add: `buf` is empty after this call.
@@ -218,24 +224,17 @@ public:
         return bandwidth_;
     }
 
-    [[nodiscard]] constexpr auto const& torrent_hash() const noexcept
-    {
-        return info_hash_;
-    }
-
-    [[nodiscard]] constexpr auto const& address() const noexcept
-    {
-        return socket_.address();
-    }
-
-    ///
-
     void set_bandwidth(tr_bandwidth* parent)
     {
         bandwidth_.setParent(parent);
     }
 
     ///
+
+    [[nodiscard]] constexpr auto const& torrent_hash() const noexcept
+    {
+        return info_hash_;
+    }
 
     void set_torrent_hash(tr_sha1_digest_t const& hash) noexcept
     {
@@ -264,6 +263,11 @@ public:
     [[nodiscard]] constexpr auto is_incoming() const noexcept
     {
         return is_incoming_;
+    }
+
+    [[nodiscard]] constexpr auto const& address() const noexcept
+    {
+        return socket_.address();
     }
 
     [[nodiscard]] constexpr auto socket_address() const noexcept
@@ -368,6 +372,7 @@ private:
     libtransmission::Buffer outbuf_;
 
     tr_session* const session_;
+    std::weak_ptr<tr_peerIo> self_;
 
     CanRead can_read_ = nullptr;
     DidWrite did_write_ = nullptr;
