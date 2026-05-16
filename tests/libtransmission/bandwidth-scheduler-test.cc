@@ -44,6 +44,12 @@ namespace tr::test
 class StrictBandwidthSchedulerTest : public SessionTest
 {
 protected:
+    static bool setSocketBufferSize(tr_socket_t sock, int size)
+    {
+        return setsockopt(sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char const*>(&size), sizeof(size)) == 0 &&
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char const*>(&size), sizeof(size)) == 0;
+    }
+
     static ReadState keepReadsBuffered([[maybe_unused]] tr_peerIo* io, [[maybe_unused]] void* user_data, size_t* piece)
     {
         *piece = 0U;
@@ -62,6 +68,9 @@ protected:
     {
         auto sockpair = std::array<evutil_socket_t, 2>{ -1, -1 };
         EXPECT_EQ(0, evutil_socketpair(LOCAL_SOCKETPAIR_AF, SOCK_STREAM, 0, std::data(sockpair))) << tr_strerror(errno);
+        static auto constexpr SocketBufferSize = int{ 1U << 20U };
+        EXPECT_TRUE(setSocketBufferSize(sockpair[0], SocketBufferSize));
+        EXPECT_TRUE(setSocketBufferSize(sockpair[1], SocketBufferSize));
         EXPECT_EQ(0, evutil_make_socket_nonblocking(sockpair[0]));
         EXPECT_EQ(0, evutil_make_socket_nonblocking(sockpair[1]));
 
@@ -220,6 +229,128 @@ TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityReadersFirst)
     EXPECT_EQ(PayloadSize, high_size.load());
     EXPECT_TRUE(high_matches.load());
     EXPECT_EQ(0U, low_size.load());
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, writableCallbackPreemptsQueuedLowPriorityWriter)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.set_priority(TR_PRI_HIGH);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.set_priority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+
+    static auto constexpr UploadBytesPerSecond = uint64_t{ 900000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr LargePayloadSize = size_t{ 450000U };
+    static auto constexpr SmallPayloadSize = size_t{ 3000U };
+
+    auto const high_payload = std::string(SmallPayloadSize, 'H');
+    auto const low_payload = std::string(LargePayloadSize, 'L');
+    auto done = std::atomic_bool{ false };
+    auto low_before_high = std::atomic_size_t{ 0U };
+    auto low_total = std::atomic_size_t{ 0U };
+    auto high_total = std::atomic_size_t{ 0U };
+
+    session_->queue_session_thread(
+        [&]()
+        {
+            session_->top_bandwidth_.set_limited(tr_direction::Up, true);
+            session_->top_bandwidth_.set_desired_speed(
+                tr_direction::Up,
+                tr::Values::Speed{ UploadBytesPerSecond, tr::Values::Speed::Units::Byps });
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            low_io->write_bytes(std::data(low_payload), std::size(low_payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*low_io);
+            low_before_high = std::size(readAvailable(low_sock));
+            EXPECT_TRUE(readAvailable(high_sock).empty());
+
+            high_io->write_bytes(std::data(high_payload), std::size(high_payload), true);
+            session_->bandwidthScheduler().on_outbuf_ready(*high_io);
+
+            high_total = std::size(readAvailable(high_sock));
+            low_total = low_before_high.load() + std::size(readAvailable(low_sock));
+
+            high_io->clear();
+            low_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_LT(0U, low_before_high.load());
+    EXPECT_LT(low_before_high.load(), std::size(low_payload));
+    EXPECT_EQ(std::size(high_payload), high_total.load());
+    EXPECT_LT(low_total.load(), std::size(low_payload));
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(low_sock);
+}
+
+TEST_F(StrictBandwidthSchedulerTest, readableCallbackPreemptsQueuedLowPriorityReader)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.set_priority(TR_PRI_HIGH);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.set_priority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+
+    static auto constexpr DownloadBytesPerSecond = uint64_t{ 900000U };
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr LargePayloadSize = size_t{ 450000U };
+    static auto constexpr SmallPayloadSize = size_t{ 3000U };
+
+    auto const high_payload = std::string(SmallPayloadSize, 'H');
+    auto const low_payload = std::string(LargePayloadSize, 'L');
+    auto done = std::atomic_bool{ false };
+    auto low_before_high = std::atomic_size_t{ 0U };
+    auto low_total = std::atomic_size_t{ 0U };
+    auto high_total = std::atomic_size_t{ 0U };
+    auto high_matches = std::atomic_bool{ false };
+
+    session_->queue_session_thread(
+        [&]()
+        {
+            session_->top_bandwidth_.set_limited(tr_direction::Down, true);
+            session_->top_bandwidth_.set_desired_speed(
+                tr_direction::Down,
+                tr::Values::Speed{ DownloadBytesPerSecond, tr::Values::Speed::Units::Byps });
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+
+            high_io->set_callbacks(&keepReadsBuffered, nullptr, nullptr, nullptr);
+            low_io->set_callbacks(&keepReadsBuffered, nullptr, nullptr, nullptr);
+
+            EXPECT_TRUE(writeAll(low_sock, low_payload));
+            session_->bandwidthScheduler().on_can_read(*low_io);
+            low_before_high = low_io->read_buffer_size();
+            EXPECT_EQ(0U, high_io->read_buffer_size());
+
+            EXPECT_TRUE(writeAll(high_sock, high_payload));
+            session_->bandwidthScheduler().on_can_read(*high_io);
+
+            high_total = high_io->read_buffer_size();
+            high_matches = high_io->read_buffer_starts_with(high_payload);
+            low_total = low_io->read_buffer_size();
+
+            high_io->clear();
+            low_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+    EXPECT_LT(0U, low_before_high.load());
+    EXPECT_LT(low_before_high.load(), std::size(low_payload));
+    EXPECT_EQ(std::size(high_payload), high_total.load());
+    EXPECT_TRUE(high_matches.load());
+    EXPECT_LT(low_total.load(), std::size(low_payload));
 
     tr_net_close_socket(high_sock);
     tr_net_close_socket(low_sock);
