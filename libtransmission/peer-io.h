@@ -48,6 +48,12 @@ class tr_peerIo final : public std::enable_shared_from_this<tr_peerIo>
     using GotError = void (*)(tr_peerIo* io, tr_error const& error, void* userData);
 
 public:
+    struct FlushResult
+    {
+        size_t bytes_transferred = 0U;
+        size_t piece_bytes = 0U;
+    };
+
     tr_peerIo(
         tr_session* session_in,
         tr_sha1_digest_t const* info_hash,
@@ -136,6 +142,8 @@ public:
         return is_cleared_;
     }
 
+    [[nodiscard]] bool has_pending_protocol_output() const noexcept;
+
     // Write all the data from `buf`.
     // This is a destructive add: `buf` is empty after this call.
     void write(libtransmission::Buffer& buf, bool is_piece_data);
@@ -143,6 +151,7 @@ public:
     size_t flush_outgoing_protocol_msgs();
 
     size_t flush(tr_direction dir, size_t byte_limit);
+    [[nodiscard]] FlushResult flush_with_result(tr_direction dir, size_t byte_limit);
 
     void execute_can_read();
     void execute_can_write();
@@ -209,17 +218,24 @@ public:
         return bandwidth_;
     }
 
+    [[nodiscard]] constexpr auto const& torrent_hash() const noexcept
+    {
+        return info_hash_;
+    }
+
+    [[nodiscard]] constexpr auto const& address() const noexcept
+    {
+        return socket_.address();
+    }
+
+    ///
+
     void set_bandwidth(tr_bandwidth* parent)
     {
         bandwidth_.setParent(parent);
     }
 
     ///
-
-    [[nodiscard]] constexpr auto const& torrent_hash() const noexcept
-    {
-        return info_hash_;
-    }
 
     void set_torrent_hash(tr_sha1_digest_t const& hash) noexcept
     {
@@ -248,11 +264,6 @@ public:
     [[nodiscard]] constexpr auto is_incoming() const noexcept
     {
         return is_incoming_;
-    }
-
-    [[nodiscard]] constexpr auto const& address() const noexcept
-    {
-        return socket_.address();
     }
 
     [[nodiscard]] constexpr auto socket_address() const noexcept
@@ -327,12 +338,12 @@ private:
     void event_enable(short event);
     void event_disable(short event);
 
-    void can_read_wrapper();
-    void did_write_wrapper(size_t bytes_transferred);
+    [[nodiscard]] size_t can_read_wrapper();
+    [[nodiscard]] size_t did_write_wrapper(size_t bytes_transferred);
     void flush_outbuf_soon();
 
-    size_t try_read(size_t max);
-    size_t try_write(size_t max);
+    [[nodiscard]] FlushResult try_read(size_t max);
+    [[nodiscard]] FlushResult try_write(size_t max);
 
     // this is only public for testing purposes.
     // production code should use new_outgoing() or new_incoming()

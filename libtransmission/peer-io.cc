@@ -262,9 +262,10 @@ bool tr_peerIo::reconnect()
 
 // ---
 
-void tr_peerIo::did_write_wrapper(size_t bytes_transferred)
+size_t tr_peerIo::did_write_wrapper(size_t bytes_transferred)
 {
     auto const keep_alive = shared_from_this();
+    auto piece_bytes = size_t{ 0U };
 
     while (bytes_transferred != 0 && !std::empty(outbuf_info_))
     {
@@ -276,6 +277,10 @@ void tr_peerIo::did_write_wrapper(size_t bytes_transferred)
         uint64_t const now = tr_time_msec();
 
         bandwidth().notifyBandwidthConsumed(TR_UP, payload, is_piece_data, now);
+        if (is_piece_data)
+        {
+            piece_bytes += payload;
+        }
 
         if (overhead > 0)
         {
@@ -294,9 +299,11 @@ void tr_peerIo::did_write_wrapper(size_t bytes_transferred)
             outbuf_info_.pop_front();
         }
     }
+
+    return piece_bytes;
 }
 
-size_t tr_peerIo::try_write(size_t max)
+tr_peerIo::FlushResult tr_peerIo::try_write(size_t max)
 {
     static auto constexpr Dir = TR_UP;
 
@@ -318,6 +325,7 @@ size_t tr_peerIo::try_write(size_t max)
 
     tr_error* error = nullptr;
     auto const n_written = socket_.try_write(buf, max, &error);
+    auto piece_bytes = size_t{ 0U };
     // enable further writes if there's more data to write
     set_enabled(Dir, !std::empty(buf) && (error == nullptr || canRetryFromError(error->code)));
 
@@ -335,10 +343,10 @@ size_t tr_peerIo::try_write(size_t max)
     }
     else if (n_written > 0U)
     {
-        did_write_wrapper(n_written);
+        piece_bytes = did_write_wrapper(n_written);
     }
 
-    return n_written;
+    return { n_written, piece_bytes };
 }
 
 void tr_peerIo::execute_can_write()
@@ -347,7 +355,7 @@ void tr_peerIo::execute_can_write()
 
     // Write as much as possible. Since the socket is non-blocking,
     // write() will return if it can't write any more without blocking.
-    try_write(SIZE_MAX);
+    static_cast<void>(try_write(SIZE_MAX));
 }
 
 void tr_peerIo::event_write_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)
@@ -370,13 +378,13 @@ void tr_peerIo::event_write_cb([[maybe_unused]] evutil_socket_t fd, short /*even
 
 // ---
 
-void tr_peerIo::can_read_wrapper()
+size_t tr_peerIo::can_read_wrapper()
 {
     // try to consume the input buffer
 
     if (can_read_ == nullptr)
     {
-        return;
+        return {};
     }
 
     auto const lock = session_->unique_lock();
@@ -385,6 +393,7 @@ void tr_peerIo::can_read_wrapper()
     auto const now = tr_time_msec();
     auto done = bool{ false };
     auto err = bool{ false };
+    auto piece_bytes = size_t{ 0U };
 
     // In normal conditions, only continue processing if we still have bandwidth
     // quota for it.
@@ -403,6 +412,7 @@ void tr_peerIo::can_read_wrapper()
         if (piece != 0)
         {
             bandwidth().notifyBandwidthConsumed(TR_DOWN, piece, true, now);
+            piece_bytes += piece;
         }
 
         if (used != piece)
@@ -435,9 +445,11 @@ void tr_peerIo::can_read_wrapper()
             break;
         }
     }
+
+    return piece_bytes;
 }
 
-size_t tr_peerIo::try_read(size_t max)
+tr_peerIo::FlushResult tr_peerIo::try_read(size_t max)
 {
     static auto constexpr Dir = TR_DOWN;
 
@@ -460,6 +472,7 @@ size_t tr_peerIo::try_read(size_t max)
     auto& buf = inbuf_;
     tr_error* error = nullptr;
     auto const n_read = socket_.try_read(buf, max, &error);
+    auto piece_bytes = size_t{ 0U };
     set_enabled(Dir, error == nullptr || canRetryFromError(error->code));
 
     if (error != nullptr)
@@ -474,10 +487,10 @@ size_t tr_peerIo::try_read(size_t max)
     }
     else if (!std::empty(buf))
     {
-        can_read_wrapper();
+        piece_bytes = can_read_wrapper();
     }
 
-    return n_read;
+    return { n_read, piece_bytes };
 }
 
 void tr_peerIo::execute_can_read()
@@ -488,7 +501,7 @@ void tr_peerIo::execute_can_read()
 
     auto const n_used = std::size(inbuf_);
     auto const n_left = n_used >= MaxLen ? 0U : MaxLen - n_used;
-    try_read(n_left);
+    static_cast<void>(try_read(n_left));
 }
 
 void tr_peerIo::event_read_cb([[maybe_unused]] evutil_socket_t fd, short /*event*/, void* vio)
@@ -595,6 +608,13 @@ size_t tr_peerIo::flush(tr_direction dir, size_t limit)
 {
     TR_ASSERT(tr_isDirection(dir));
 
+    return flush_with_result(dir, limit).bytes_transferred;
+}
+
+tr_peerIo::FlushResult tr_peerIo::flush_with_result(tr_direction dir, size_t limit)
+{
+    TR_ASSERT(tr_isDirection(dir));
+
     return dir == TR_DOWN ? try_read(limit) : try_write(limit);
 }
 
@@ -617,6 +637,11 @@ size_t tr_peerIo::flush_outgoing_protocol_msgs()
     return flush(TR_UP, byte_count);
 }
 
+bool tr_peerIo::has_pending_protocol_output() const noexcept
+{
+    return !std::empty(outbuf_info_) && !outbuf_info_.front().second;
+}
+
 void tr_peerIo::flush_outbuf_soon()
 {
     flush_outbuf_trigger_->startSingleShot(std::chrono::milliseconds::zero());
@@ -631,7 +656,7 @@ void tr_peerIo::execute_outbuf_ready()
 
     if (outbuf_.size() >= MinPayloadSize)
     {
-        try_write(SIZE_MAX);
+        static_cast<void>(try_write(SIZE_MAX));
     }
 }
 
@@ -795,7 +820,7 @@ void tr_peerIo::execute_utp_read(size_t bytes_transferred)
     TR_ASSERT(!is_cleared_);
 
     set_enabled(TR_DOWN, true);
-    can_read_wrapper();
+    static_cast<void>(can_read_wrapper());
 }
 
 void tr_peerIo::utp_init([[maybe_unused]] struct_utp_context* ctx)

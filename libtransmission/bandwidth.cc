@@ -169,6 +169,28 @@ void tr_bandwidth::allocatePulse(unsigned int period_msec, std::vector<std::shar
     allocatePulseImpl(TR_PRI_LOW, period_msec, peer_pool);
 }
 
+bool tr_bandwidth::honorsAncestor(tr_direction dir, tr_bandwidth const* ancestor) const noexcept
+{
+    TR_ASSERT(tr_isDirection(dir));
+
+    if (ancestor == nullptr)
+    {
+        return false;
+    }
+
+    if (ancestor == this)
+    {
+        return true;
+    }
+
+    if (parent_ == nullptr || !band_[dir].honor_parent_limits_)
+    {
+        return false;
+    }
+
+    return parent_->honorsAncestor(dir, ancestor);
+}
+
 void tr_bandwidth::phaseOne(std::vector<tr_peerIo*>& peers, tr_direction dir)
 {
     // First phase of IO. Tries to distribute bandwidth fairly to keep faster

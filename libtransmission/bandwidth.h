@@ -243,6 +243,8 @@ public:
         return this->band_[direction].honor_parent_limits_;
     }
 
+    [[nodiscard]] bool honorsAncestor(tr_direction dir, tr_bandwidth const* ancestor) const noexcept;
+
     [[nodiscard]] tr_bandwidth_limits getLimits() const;
 
     void setLimits(tr_bandwidth_limits const* limits);
