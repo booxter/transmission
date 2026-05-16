@@ -404,8 +404,208 @@ This is an explicit compromise for the initial implementation, not a claim that 
 - Invalid allocator names must produce a warning and select the legacy allocator.
 - Allocator selection remains config-file only and requires restart in the initial implementation.
 
+## Limited-Mode Budget Retention
+
+The current strict scheduler enforces priority among work that is runnable now, but it is still fully work-conserving within the pulse.
+
+That means a limited-direction pulse can still spend too much of its budget on `NORMAL` or `LOW` work early in the pulse if no `HIGH` work is runnable yet. If `HIGH` work becomes runnable later in the same pulse, it may find that the limited budget has already been consumed.
+
+This is not a problem in unlimited mode, but it is a problem when the goal is to preserve some budget opportunity for higher-priority work that may appear later in the pulse.
+
+### Goal
+
+For limited directions, the strict allocator should retain part of the pulse budget for potential later-arriving higher-priority work instead of allowing lower priorities to consume the whole budget immediately.
+
+The intended effect is:
+
+- `HIGH` remains eligible immediately
+- `NORMAL` becomes eligible more gradually over the pulse
+- `LOW` becomes eligible even more gradually over the pulse
+- if higher-priority work never arrives, lower-priority work should still be able to consume the available limited budget by the end of the pulse
+
+This refinement is intended specifically for limited-mode behavior. Unlimited directions should keep the simpler strict work-conserving behavior.
+
+### Scope
+
+The first version of this refinement should be scoped narrowly:
+
+- apply it independently per direction
+- only activate it when the relevant direction is limited
+- protect session-level limited directions only
+- only apply that protection to work that actually honors session limits in the current bandwidth tree
+- leave unlimited directions unchanged
+- treat uTP read-side behavior as the existing v1 compromise rather than trying to make it fit perfectly into the same model immediately
+
+Because the strict scheduler is session-scoped, the most natural first target is session-level limited-mode behavior. The first version should stop there.
+
+### Design Direction
+
+The current idea is to model lower-priority eligibility as cumulative release curves over pulse time rather than hard release cutoffs.
+
+Instead of saying "start `NORMAL` or `LOW` at one specific time", the scheduler would compute how much limited budget lower priorities are allowed to have consumed by the current point in the pulse.
+
+Pulse-relative time:
+
+- `t = elapsed_in_pulse / pulse_duration`
+- `t` starts at `0`
+- `t` ends at `1`
+
+The design should use two lower-priority release envelopes:
+
+- a `NORMAL+LOW` release curve that limits total non-`HIGH` consumption
+- a `LOW` release curve that limits `LOW` consumption specifically
+
+This gives a cleaner interpretation than independent per-class curves:
+
+- `HIGH` is always eligible
+- `NORMAL` can run only while total `NORMAL+LOW` consumption remains below its release envelope at time `t`
+- `LOW` can run only while both total `NORMAL+LOW` consumption and `LOW`-only consumption remain below their release envelopes at time `t`
+
+This structure preserves room for later-arriving higher priorities more directly:
+
+- unreleased `NORMAL+LOW` budget is implicitly reserved for possible future `HIGH`
+- unreleased `LOW` budget is implicitly reserved for possible future `NORMAL`
+
+### Behavioral Shape
+
+The release curves should satisfy these properties:
+
+- monotonic nondecreasing over the pulse
+- start near or at zero at the beginning of the pulse
+- reach full release by the end of the pulse
+- release `LOW` more slowly than `NORMAL+LOW`
+- avoid stranding budget at the end of the pulse if no higher-priority work arrives
+
+The first implementation should use power curves. This keeps the model cheap to evaluate, easy to explain, and easy to invert when computing the next eligibility wakeup.
+
+The release curves should therefore be:
+
+- `NORMAL+LOW`: `f_nl(t) = t^p_nl`
+- `LOW`: `f_low(t) = t^p_low`
+
+with:
+
+- `p_nl > 1`
+- `p_low > p_nl`
+
+This guarantees the desired shape:
+
+- slower than linear early
+- catching up later
+- `LOW` always released more slowly than `NORMAL+LOW` before the end of the pulse
+
+The purpose of the curves is not to create perfect prediction. The purpose is to reduce the chance that lower-priority work burns the limited pulse budget too early.
+
+### Preset Selection
+
+The curve family should be fixed to power curves in the first version, but the exponent pair should be selectable at runtime through a small set of named presets.
+
+This keeps experimentation practical without introducing multiple unrelated curve families or requiring a rebuild to compare behaviors.
+
+The canonical configuration key should be `bandwidth_strict_limited_curve`.
+
+For the initial implementation, this setting should be:
+
+- configuration-file only
+- restart-required
+- only meaningful when `bandwidth_allocator = strict`
+
+Required preset values:
+
+- `relaxed`
+- `balanced`
+- `aggressive`
+
+The initial exponent pairs should be:
+
+- `relaxed`: `p_nl = 1.5`, `p_low = 3`
+- `balanced`: `p_nl = 2`, `p_low = 4`
+- `aggressive`: `p_nl = 3`, `p_low = 6`
+
+The default preset should be `balanced`.
+
+Invalid preset names should log a warning and fall back to `balanced`.
+
+### Implementation Sketch
+
+At a high level, the strict scheduler would need additional pulse-local state for limited-mode retention:
+
+- pulse start time
+- pulse duration
+- per-direction pulse budget for the session-level limited cap being protected
+- per-direction cumulative lower-priority consumption for the current pulse
+- the next time at which a currently gated lower-priority queue may become eligible
+
+Eligibility decisions would then change from "is anything queued in this class?" to:
+
+- is the class queued?
+- is the class allowed to spend more limited budget at the current pulse time?
+
+The scheduler loop would need to handle three outcomes when lower-priority work is queued:
+
+- eligible now: drain it as usual
+- not eligible yet, but will become eligible later in this pulse: arm a timer for the next eligibility point
+- no more pulse time left: stop and wait for the next pulse
+
+This means lower-priority gating cannot rely only on the current zero-delay continuation timer. It needs a real wakeup time tied to the release model so that queued lower-priority work neither spins nor stalls indefinitely.
+
+The scheduler should reuse its existing scheduler-owned one-shot timer for this purpose rather than introducing a second timer. The same timer should handle both:
+
+- immediate continuation when eligible work exists now
+- delayed wakeup at the earliest next lower-priority eligibility point when only gated work remains
+
+In practice, the scheduler should compute the earliest useful wakeup and arm the same timer accordingly:
+
+- eligible work exists now: arm `0ms`
+- only gated work remains: arm the delay until the next envelope release point
+- no queued work remains: do not arm the timer
+
+If newly arrived higher-priority work makes immediate progress possible before a delayed wakeup fires, the scheduler should stop and re-arm the same timer for immediate draining.
+
+### Interaction With Current Accounting
+
+This refinement is meant to target limited-mode behavior, so the byte quantity used for the curves matters.
+
+The strict scheduler needs a pulse-local measure of how much protected budget lower priorities have already consumed. There are several plausible definitions:
+
+- raw bytes transferred by the scheduler
+- bytes returned by `flush()`
+- the same limited-budget quantity that `tr_bandwidth` decrements from `bytes_left_`
+
+The strict allocator should use the same limited-budget quantity that `tr_bandwidth` decrements from `bytes_left_`.
+
+This is the strictest and cleanest semantic choice because it matches the budget actually being protected. If the scheduler does not currently receive that quantity directly, the implementation should add the plumbing needed to surface it rather than approximate it with a nearby byte count.
+
+This also means the retention model should preserve current control-traffic semantics. Today, limited-budget accounting decrements `bytes_left_` only for piece data, while non-piece protocol or control traffic and packet overhead contribute to raw accounting but do not consume the limited piece budget. The limited-mode release envelopes should therefore track piece-budget consumption only, not raw traffic volume.
+
+That does not mean control traffic is outside the limit machinery entirely. Read and write execution still pass through `clamp()`, so control traffic still depends on available bandwidth opportunity to make progress even though it does not itself decrement `bytes_left_`. The retention model should match the accounting rule, but any implementation discussion should keep this distinction explicit.
+
+To preserve current behavior more closely, the scheduler should have explicit visibility into whether a queued write item has pending protocol or control output. Without that signal, lower-priority protocol traffic could be delayed indirectly just because lower-priority piece-budget release is being held back.
+
+The first version should keep this visibility minimal:
+
+- expose whether a peer has pending protocol or control writes
+- use that signal to let lower-priority control traffic preserve current semantics as much as practical
+- avoid full output-queue introspection unless later implementation experience shows it is necessary
+
+### Known Constraints
+
+- This design can only preserve budget that has not already been consumed. It does not retroactively reclaim budget from lower-priority work once spent.
+- The design naturally fits session-level limited-mode protection better than arbitrary subtree protection.
+- Session-level retention should not gate work that does not actually honor session limits. The current tree allows torrents or groups to stop honoring parent limits, and that needs to be reflected in the implementation.
+- The current strict scheduler only sees a flat peer list produced by `allocatePulse()`, with each peer carrying its effective priority. It does not currently receive subtree identity or ancestor-chain metadata.
+- A peer may sit under multiple relevant limited ancestors in the current tree, for example `session -> group -> torrent -> peer` or `session -> torrent -> peer`.
+- Actual limit enforcement and accounting recurse through the whole honoring ancestor chain. Protecting limited subtrees correctly would therefore require per-limited-ancestor retention state rather than a single subtree tag.
+- If subtree retention is ever pursued later, the likely shape is:
+- add plumbing so the scheduler can identify the limited ancestor chain for each `peer + direction`
+- keep pulse-local retention state keyed by `tr_bandwidth*` for each limited protected ancestor
+- charge lower-priority piece consumption against every applicable protected ancestor in the chain
+- require a lower-priority item to satisfy all relevant ancestor envelopes before it becomes eligible
+- uTP read-side behavior will remain less strict than TCP read-side behavior in the first version.
+
 ## Open Questions
 
+None at the moment.
 
 ## Testing Strategy
 
