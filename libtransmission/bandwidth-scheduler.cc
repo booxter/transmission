@@ -249,8 +249,14 @@ private:
 
     [[nodiscard]] auto has_queued_work() const noexcept
     {
-        return std::any_of(std::begin(read_queues_), std::end(read_queues_), [](auto const& queue) { return !std::empty(queue); }) ||
-            std::any_of(std::begin(write_queues_), std::end(write_queues_), [](auto const& queue) { return !std::empty(queue); });
+        return std::any_of(
+                   std::begin(read_queues_),
+                   std::end(read_queues_),
+                   [](auto const& queue) { return !std::empty(queue); }) ||
+            std::any_of(
+                   std::begin(write_queues_),
+                   std::end(write_queues_),
+                   [](auto const& queue) { return !std::empty(queue); });
     }
 
     template<typename QueueContainer>
