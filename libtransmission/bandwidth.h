@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef> // size_t
 #include <cstdint> // uint64_t
+#include <limits>
 #include <memory>
 #include <utility> // for std::move()
 #include <vector>
@@ -291,7 +292,7 @@ private:
     std::vector<tr_bandwidth*> children_;
     tr_bandwidth* parent_ = nullptr;
     std::weak_ptr<tr_peerIo> peer_;
-    tr_priority_t priority_ = 0;
+    tr_priority_t priority_ = std::numeric_limits<tr_priority_t>::max();
 };
 
 /* @} */

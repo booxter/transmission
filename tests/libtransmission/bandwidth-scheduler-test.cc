@@ -232,6 +232,41 @@ TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityWritersFirst)
     tr_net_close_socket(low_sock);
 }
 
+TEST_F(StrictBandwidthSchedulerTest, pulsePreservesLowPriorityPeers)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.setPriority(TR_PRI_HIGH);
+
+    auto normal_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    normal_parent.setPriority(TR_PRI_NORMAL);
+
+    auto low_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    low_parent.setPriority(TR_PRI_LOW);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+    auto [normal_io, normal_sock] = createIncomingIo(&normal_parent);
+    auto [low_io, low_sock] = createIncomingIo(&low_parent);
+
+    auto refs = std::vector<std::shared_ptr<tr_peerIo>>{};
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            session_->top_bandwidth_.allocatePulse(500U, refs);
+            ASSERT_EQ(TR_PRI_HIGH, high_io->priority());
+            ASSERT_EQ(TR_PRI_NORMAL, normal_io->priority());
+            ASSERT_EQ(TR_PRI_LOW, low_io->priority());
+
+            high_io->clear();
+            normal_io->clear();
+            low_io->clear();
+        });
+
+    tr_net_close_socket(high_sock);
+    tr_net_close_socket(normal_sock);
+    tr_net_close_socket(low_sock);
+}
+
 TEST_F(StrictBandwidthSchedulerTest, pulseSeedsHighPriorityReadersFirst)
 {
     auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };

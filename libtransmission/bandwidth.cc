@@ -4,6 +4,7 @@
 // License text can be found in the licenses/ folder.
 
 #include <algorithm>
+#include <limits>
 #include <utility> // for std::swap()
 #include <vector>
 
@@ -138,7 +139,7 @@ void tr_bandwidth::allocatePulseImpl(
     unsigned int period_msec,
     std::vector<std::shared_ptr<tr_peerIo>>& peer_pool)
 {
-    auto const priority = std::max(parent_priority, this->priority_);
+    auto const priority = std::min(parent_priority, this->priority_);
 
     // set the available bandwidth
     for (auto const dir : { TR_UP, TR_DOWN })
@@ -166,7 +167,7 @@ void tr_bandwidth::allocatePulseImpl(
 
 void tr_bandwidth::allocatePulse(unsigned int period_msec, std::vector<std::shared_ptr<tr_peerIo>>& peer_pool)
 {
-    allocatePulseImpl(TR_PRI_LOW, period_msec, peer_pool);
+    allocatePulseImpl(std::numeric_limits<tr_priority_t>::max(), period_msec, peer_pool);
 }
 
 bool tr_bandwidth::honorsAncestor(tr_direction dir, tr_bandwidth const* ancestor) const noexcept
