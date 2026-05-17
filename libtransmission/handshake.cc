@@ -837,6 +837,7 @@ bool tr_handshake::fire_done(bool is_connected)
 
     auto peer_io = std::shared_ptr<tr_peerIo>{};
     std::swap(peer_io, peer_io_);
+    peer_io->set_defer_immediate_outbuf_ready(false);
 
     bool const success = (cb)(Result{ std::move(peer_io), peer_id_, have_read_anything_from_peer_, is_connected });
     return success;
@@ -908,6 +909,7 @@ tr_handshake::tr_handshake(Mediator* mediator, std::shared_ptr<tr_peerIo> peer_i
 {
     timeout_timer_->startSingleShot(HandshakeTimeoutSec);
 
+    peer_io_->set_defer_immediate_outbuf_ready(true);
     peer_io_->set_callbacks(&tr_handshake::can_read, nullptr, &tr_handshake::on_error, this);
 
     if (is_incoming())

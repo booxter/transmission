@@ -94,6 +94,11 @@ public:
         return socket_.is_utp();
     }
 
+    constexpr void set_defer_immediate_outbuf_ready(bool defer) noexcept
+    {
+        defer_immediate_outbuf_ready_ = defer;
+    }
+
     void clear();
 
     [[nodiscard]] bool reconnect();
@@ -396,4 +401,5 @@ private:
     bool extended_protocol_supported_ = false;
     bool fast_extension_supported_ = false;
     bool is_cleared_ = false;
+    bool defer_immediate_outbuf_ready_ = false;
 };

@@ -648,7 +648,11 @@ size_t tr_peerIo::pending_protocol_output_size() const noexcept
 
 void tr_peerIo::flush_outbuf_soon()
 {
-    session_->bandwidthScheduler().on_outbuf_ready(*this);
+    if (!defer_immediate_outbuf_ready_)
+    {
+        session_->bandwidthScheduler().on_outbuf_ready(*this);
+    }
+
     flush_outbuf_trigger_->startSingleShot(std::chrono::milliseconds::zero());
 }
 

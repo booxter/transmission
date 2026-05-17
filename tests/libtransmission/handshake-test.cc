@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
+#include <map>
 #include <string_view>
 
 #include <event2/util.h>
@@ -214,6 +216,31 @@ public:
     }
 };
 
+class StrictHandshakeTest : public HandshakeTest
+{
+protected:
+    template<typename Func>
+    void runInSessionThreadAndWait(Func&& func, std::chrono::milliseconds timeout = 500ms)
+    {
+        auto done = std::atomic_bool{ false };
+
+        session_->runInSessionThread(
+            [&, func = std::forward<Func>(func)]()
+            {
+                func();
+                done = true;
+            });
+
+        ASSERT_TRUE(waitFor([&]() { return done.load(); }, timeout));
+    }
+
+    void SetUp() override
+    {
+        tr_variantDictAddStr(settings(), TR_KEY_bandwidth_allocator, "strict");
+        HandshakeTest::SetUp();
+    }
+};
+
 TEST_F(HandshakeTest, incomingPlaintext)
 {
     auto const peer_id = makeRandomPeerId();
@@ -248,6 +275,48 @@ TEST_F(HandshakeTest, incomingPlaintext)
     EXPECT_EQ(TorrentWeAreSeeding.info_hash, io->torrent_hash());
 
     evutil_closesocket(sock);
+}
+
+TEST_F(StrictHandshakeTest, outgoingErrorCallbackIsDeferredUntilAfterMapInsertion)
+{
+    auto mediator = MediatorMock{ session_ };
+    mediator.torrents.emplace(UbuntuTorrent.info_hash, UbuntuTorrent);
+
+    auto [io, peer_sock] = createOutgoingIo(session_, UbuntuTorrent.info_hash);
+    ASSERT_NE(nullptr, io);
+
+    evutil_closesocket(peer_sock);
+
+    using Handshakes = std::map<tr_address, tr_handshake>;
+
+    auto handshakes = Handshakes{};
+    auto callback_ran = std::atomic_bool{ false };
+    auto callback_ran_during_emplace = std::atomic_bool{ false };
+    auto emplacing = std::atomic_bool{ false };
+    auto const addr = io->address();
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            emplacing = true;
+            handshakes.try_emplace(
+                addr,
+                &mediator,
+                io,
+                TR_CLEAR_PREFERRED,
+                [&](auto const& /*result*/)
+                {
+                    callback_ran_during_emplace = emplacing.load();
+                    callback_ran = true;
+                    return true;
+                });
+            emplacing = false;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return callback_ran.load(); }, MaxWaitMsec));
+    EXPECT_FALSE(callback_ran_during_emplace.load());
+
+    runInSessionThreadAndWait([&]() { handshakes.clear(); });
 }
 
 // The datastream is identical to HandshakeTest.incomingPlaintext,
