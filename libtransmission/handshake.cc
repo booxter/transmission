@@ -824,6 +824,8 @@ bool tr_handshake::fire_done(bool is_connected)
 {
     maybe_recycle_dh();
 
+    disarm_owned_peer_io();
+
     if (!on_done_)
     {
         return false;
@@ -837,10 +839,20 @@ bool tr_handshake::fire_done(bool is_connected)
 
     auto peer_io = std::shared_ptr<tr_peerIo>{};
     std::swap(peer_io, peer_io_);
-    peer_io->set_defer_immediate_outbuf_ready(false);
 
     bool const success = (cb)(Result{ std::move(peer_io), peer_id_, have_read_anything_from_peer_, is_connected });
     return success;
+}
+
+void tr_handshake::disarm_owned_peer_io() noexcept
+{
+    if (peer_io_ == nullptr)
+    {
+        return;
+    }
+
+    peer_io_->clear_callbacks();
+    peer_io_->set_defer_immediate_outbuf_ready(false);
 }
 
 std::string_view tr_handshake::state_string(State state) noexcept
@@ -929,4 +941,9 @@ tr_handshake::tr_handshake(Mediator* mediator, std::shared_ptr<tr_peerIo> peer_i
         set_state(State::AwaitingHandshake);
         peer_io_->write_bytes(std::data(msg), std::size(msg), false);
     }
+}
+
+tr_handshake::~tr_handshake()
+{
+    disarm_owned_peer_io();
 }

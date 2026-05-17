@@ -72,6 +72,7 @@ public:
     };
 
     tr_handshake(Mediator* mediator, std::shared_ptr<tr_peerIo> peer_io, tr_encryption_mode mode_in, DoneFunc on_done);
+    ~tr_handshake();
 
 private:
     enum class ParseResult
@@ -142,7 +143,6 @@ private:
 
     ReadState done(bool is_connected)
     {
-        peer_io_->clear_callbacks();
         return fire_done(is_connected) ? READ_LATER : READ_ERR;
     }
 
@@ -186,6 +186,7 @@ private:
     }
 
     bool fire_done(bool is_connected);
+    void disarm_owned_peer_io() noexcept;
 
     ///
 

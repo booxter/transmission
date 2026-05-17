@@ -214,6 +214,11 @@ public:
         waitFor([&result]() { return result.has_value(); }, MaxWaitMsec);
         return result;
     }
+
+    static void callPeerIoErrorCallback(std::shared_ptr<tr_peerIo> const& peer_io, tr_error const& error)
+    {
+        peer_io->call_error_callback(error);
+    }
 };
 
 class StrictHandshakeTest : public HandshakeTest
@@ -317,6 +322,44 @@ TEST_F(StrictHandshakeTest, outgoingErrorCallbackIsDeferredUntilAfterMapInsertio
     EXPECT_FALSE(callback_ran_during_emplace.load());
 
     runInSessionThreadAndWait([&]() { handshakes.clear(); });
+}
+
+TEST_F(StrictHandshakeTest, destroyingHandshakeClearsErrorCallbackOnPeerIo)
+{
+    auto mediator = MediatorMock{ session_ };
+    mediator.torrents.emplace(TorrentWeAreSeeding.info_hash, TorrentWeAreSeeding);
+
+    auto [io, peer_sock] = createIncomingIo(session_);
+    ASSERT_NE(nullptr, io);
+
+    using Handshakes = std::map<tr_address, tr_handshake>;
+
+    auto handshakes = Handshakes{};
+    auto callback_ran = std::atomic_bool{ false };
+    auto const addr = io->address();
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            handshakes.try_emplace(
+                addr,
+                &mediator,
+                io,
+                TR_CLEAR_PREFERRED,
+                [&](auto const& /*result*/)
+                {
+                    callback_ran = true;
+                    return true;
+                });
+
+            handshakes.clear();
+
+            auto error = tr_error{ ECONNRESET, const_cast<char*>("synthetic handshake error") };
+            callPeerIoErrorCallback(io, error);
+        });
+
+    EXPECT_FALSE(callback_ran.load());
+    evutil_closesocket(peer_sock);
 }
 
 // The datastream is identical to HandshakeTest.incomingPlaintext,
