@@ -456,6 +456,16 @@ public:
         return io->pending_piece_output_size();
     }
 
+    [[nodiscard]] bool has_upload_bandwidth_left() const noexcept override
+    {
+        return io->has_bandwidth_left(TR_UP);
+    }
+
+    [[nodiscard]] bool is_waiting_for_can_write() const noexcept override
+    {
+        return io->is_waiting_for_can_write();
+    }
+
     [[nodiscard]] std::pair<tr_address, tr_port> socketAddress() const override
     {
         return io->socket_address();

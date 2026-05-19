@@ -410,6 +410,44 @@ TEST_F(StrictBandwidthSchedulerTest, writableCallbackPreemptsQueuedLowPriorityWr
     tr_net_close_socket(low_sock);
 }
 
+TEST_F(StrictBandwidthSchedulerTest, stalledWriterWaitsForWriteReadyWithBufferedOutput)
+{
+    auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };
+    high_parent.setPriority(TR_PRI_HIGH);
+
+    auto [high_io, high_sock] = createIncomingIo(&high_parent);
+
+    static auto constexpr PulseMsec = uint64_t{ 500U };
+    static auto constexpr PayloadSize = size_t{ 450000U };
+
+    auto const high_payload = std::string(PayloadSize, 'H');
+    auto sent = size_t{ 0U };
+    auto waiting_for_write = bool{};
+    auto pending_piece_bytes = size_t{ 0U };
+    auto done = std::atomic_bool{ false };
+
+    session_->runInSessionThread(
+        [&]()
+        {
+            session_->bandwidthScheduler().on_pulse(PulseMsec);
+            high_io->write_bytes(std::data(high_payload), std::size(high_payload), true);
+            pending_piece_bytes = high_io->pending_piece_output_size();
+            waiting_for_write = high_io->is_waiting_for_can_write();
+            sent = std::size(readAvailable(high_sock));
+            high_io->clear();
+            done = true;
+        });
+
+    EXPECT_TRUE(waitFor([&]() { return done.load(); }, 200));
+
+    EXPECT_LT(0U, sent);
+    EXPECT_LT(sent, std::size(high_payload));
+    EXPECT_LT(0U, pending_piece_bytes);
+    EXPECT_TRUE(waiting_for_write);
+
+    tr_net_close_socket(high_sock);
+}
+
 TEST_F(StrictBandwidthSchedulerTest, readableCallbackPreemptsQueuedLowPriorityReader)
 {
     auto high_parent = tr_bandwidth{ &session_->top_bandwidth_ };

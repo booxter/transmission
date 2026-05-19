@@ -60,6 +60,9 @@ struct tr_strict_bandwidth_curve_pulse_outcome
         std::array<size_t, 3> piece_bytes = {};
         std::array<bool, 3> had_blocked_work = {};
         std::array<bool, 3> has_pending_work = {};
+        std::array<uint64_t, 3> write_attempts = {};
+        std::array<uint64_t, 3> zero_write_attempts = {};
+        std::array<uint64_t, 3> partial_write_attempts = {};
     };
 
     std::array<DirectionState, 2> by_direction = {};
@@ -77,6 +80,26 @@ struct tr_strict_bandwidth_curve_pulse_outcome
     void note_pending(tr_direction dir, tr_priority_t priority) noexcept
     {
         by_direction[direction_index(dir)].has_pending_work[priority_index(priority)] = true;
+    }
+
+    void note_write_attempt(
+        tr_direction dir,
+        tr_priority_t priority,
+        bool transferred_any_bytes,
+        bool transferred_full_limit) noexcept
+    {
+        auto& state = by_direction[direction_index(dir)];
+        auto const index = priority_index(priority);
+
+        ++state.write_attempts[index];
+        if (!transferred_any_bytes)
+        {
+            ++state.zero_write_attempts[index];
+        }
+        else if (!transferred_full_limit)
+        {
+            ++state.partial_write_attempts[index];
+        }
     }
 
 private:

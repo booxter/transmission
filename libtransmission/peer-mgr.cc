@@ -2258,6 +2258,8 @@ struct HighPeerDiagnostics
     bool is_seed = false;
     bool is_interested = false;
     bool is_choked = false;
+    bool has_upload_bandwidth_left = false;
+    bool is_waiting_for_can_write = false;
     uint64_t request_blocks = 0U;
     uint64_t piece_bytes = 0U;
     uint64_t protocol_bytes = 0U;
@@ -2330,12 +2332,14 @@ struct HighPeerDiagnostics
 
         first = false;
         formatted += fmt::format(
-            FMT_STRING("tor{}@{}{{I{} C{} S{} req:{} piece:{} proto:{} up:{}}}"),
+            FMT_STRING("tor{}@{}{{I{} C{} S{} BW{} W{} req:{} piece:{} proto:{} up:{}}}"),
             peer.torrent_id,
             peer.display_name,
             peer.is_interested ? 1 : 0,
             peer.is_choked ? 1 : 0,
             peer.is_seed ? 1 : 0,
+            peer.has_upload_bandwidth_left ? 1 : 0,
+            peer.is_waiting_for_can_write ? 1 : 0,
             peer.request_blocks,
             peer.piece_bytes,
             peer.protocol_bytes,
@@ -2472,6 +2476,8 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                         .is_seed = is_seed,
                         .is_interested = is_interested,
                         .is_choked = is_choked,
+                        .has_upload_bandwidth_left = peer->has_upload_bandwidth_left(),
+                        .is_waiting_for_can_write = peer->is_waiting_for_can_write(),
                         .request_blocks = n_requests,
                         .piece_bytes = piece_bytes,
                         .protocol_bytes = protocol_bytes,

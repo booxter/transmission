@@ -275,6 +275,21 @@ private:
             outcome.has_pending_work[1] ? 1U : 0U,
             outcome.has_pending_work[2] ? 1U : 0U,
         };
+        auto const write_attempts = PriorityCounters{
+            static_cast<uint64_t>(outcome.write_attempts[0]),
+            static_cast<uint64_t>(outcome.write_attempts[1]),
+            static_cast<uint64_t>(outcome.write_attempts[2]),
+        };
+        auto const zero_write_attempts = PriorityCounters{
+            static_cast<uint64_t>(outcome.zero_write_attempts[0]),
+            static_cast<uint64_t>(outcome.zero_write_attempts[1]),
+            static_cast<uint64_t>(outcome.zero_write_attempts[2]),
+        };
+        auto const partial_write_attempts = PriorityCounters{
+            static_cast<uint64_t>(outcome.partial_write_attempts[0]),
+            static_cast<uint64_t>(outcome.partial_write_attempts[1]),
+            static_cast<uint64_t>(outcome.partial_write_attempts[2]),
+        };
 
         if (budget == 0U && piece_total == 0U && blocked == PriorityCounters{} && pending == PriorityCounters{})
         {
@@ -284,24 +299,31 @@ private:
         if (!is_dynamic)
         {
             return fmt::format(
-                "budget={} util={} piece={} blocked={} pending={} curve={{fixed p=[{:.2f},{:.2f}]}}",
+                "budget={} util={} piece={} blocked={} pending={} write={{att:{} zero:{} part:{}}} "
+                "curve={{fixed p=[{:.2f},{:.2f}]}}",
                 budget,
                 utilization,
                 format_priority_counters(piece),
                 format_priority_counters(blocked),
                 format_priority_counters(pending),
+                format_priority_counters(write_attempts),
+                format_priority_counters(zero_write_attempts),
+                format_priority_counters(partial_write_attempts),
                 state.normal_low_exponent,
                 state.low_exponent);
         }
 
         return fmt::format(
-            "budget={} util={} piece={} blocked={} pending={} "
+            "budget={} util={} piece={} blocked={} pending={} write={{att:{} zero:{} part:{}}} "
             "curve={{dynamic p=[{:.2f},{:.2f}] win=[{},{},{},{}] last={}}}",
             budget,
             utilization,
             format_priority_counters(piece),
             format_priority_counters(blocked),
             format_priority_counters(pending),
+            format_priority_counters(write_attempts),
+            format_priority_counters(zero_write_attempts),
+            format_priority_counters(partial_write_attempts),
             state.normal_low_exponent,
             state.low_exponent,
             state.window_pulses,
@@ -646,6 +668,11 @@ private:
             if (flushed_all_protocol && io->has_output_buffered() && admission.piece_limit != 0U)
             {
                 piece_result = io->flush_with_result(TR_UP, admission.piece_limit);
+                current_pulse_outcome_.note_write_attempt(
+                    TR_UP,
+                    priority,
+                    piece_result.bytes_transferred != 0U,
+                    piece_result.bytes_transferred == admission.piece_limit);
                 charge_retained_piece_bytes(TR_UP, priority, *io, piece_result.piece_bytes);
             }
 

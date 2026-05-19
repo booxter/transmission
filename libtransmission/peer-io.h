@@ -177,6 +177,8 @@ public:
         return bandwidth_.clamp(dir, 1024) > 0;
     }
 
+    [[nodiscard]] bool is_waiting_for_can_write() const noexcept;
+
     [[nodiscard]] auto get_piece_speed_bytes_per_second(uint64_t now, tr_direction dir) const noexcept
     {
         return bandwidth_.getPieceSpeedBytesPerSecond(now, dir);

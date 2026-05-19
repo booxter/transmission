@@ -661,6 +661,11 @@ size_t tr_peerIo::pending_piece_output_size() const noexcept
     return byte_count;
 }
 
+bool tr_peerIo::is_waiting_for_can_write() const noexcept
+{
+    return (pending_events_ & EV_WRITE) != 0;
+}
+
 void tr_peerIo::flush_outbuf_soon()
 {
     if (!defer_immediate_outbuf_ready_)
