@@ -184,6 +184,36 @@ TEST(StrictBandwidthCurvePolicyTest, highChargeDelaysLowRelease)
     EXPECT_GT(low.next_wakeup_msec, 1450U);
 }
 
+TEST(StrictBandwidthCurvePolicyTest, lowPriorityGetsFinalReleaseLeadWindow)
+{
+    auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
+
+    auto const pulse = make_pulse();
+    policy->on_pulse_start(pulse);
+
+    auto charge = tr_strict_bandwidth_curve_charge{};
+    charge.dir = TR_UP;
+    charge.priority = TR_PRI_HIGH;
+    charge.piece_bytes = 5000U;
+    charge.applies = true;
+    policy->charge(charge);
+
+    auto query = tr_strict_bandwidth_curve_query{};
+    query.dir = TR_UP;
+    query.priority = TR_PRI_LOW;
+    query.applies = true;
+
+    query.now_msec = 1489U;
+    auto const before_window = policy->admit(query);
+    EXPECT_EQ(0U, before_window.piece_limit);
+    EXPECT_EQ(1490U, before_window.next_wakeup_msec);
+
+    query.now_msec = 1490U;
+    auto const in_window = policy->admit(query);
+    EXPECT_GT(in_window.piece_limit, 0U);
+    EXPECT_EQ(0U, in_window.next_wakeup_msec);
+}
+
 TEST(StrictBandwidthCurvePolicyTest, NonApplyingWorkIsNeverCurveGated)
 {
     auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Aggressive, 3000U, 1024U);

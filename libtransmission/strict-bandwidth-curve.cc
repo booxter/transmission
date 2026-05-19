@@ -13,6 +13,8 @@
 namespace
 {
 
+auto constexpr FinalReleaseLeadMsec = uint64_t{ 10U };
+
 [[nodiscard]] constexpr auto direction_index(tr_direction dir) noexcept
 {
     return dir == TR_UP ? size_t{ 0U } : size_t{ 1U };
@@ -246,7 +248,7 @@ private:
             return size_t{ 0U };
         }
 
-        if (now_msec + 1U >= pulse_deadline_msec_ || pulse_duration_msec_ == 0U)
+        if (now_msec + FinalReleaseLeadMsec >= pulse_deadline_msec_ || pulse_duration_msec_ == 0U)
         {
             return retention.pulse_budget;
         }
@@ -276,8 +278,9 @@ private:
             wakeup_msec = now_msec + 1U;
         }
 
-        auto const final_wakeup_msec = pulse_deadline_msec_ > pulse_start_msec_ ? pulse_deadline_msec_ - 1U :
-                                                                                  pulse_deadline_msec_;
+        auto const final_wakeup_msec = pulse_deadline_msec_ > pulse_start_msec_ + FinalReleaseLeadMsec ?
+            pulse_deadline_msec_ - FinalReleaseLeadMsec :
+            pulse_deadline_msec_;
         return std::min(wakeup_msec, final_wakeup_msec);
     }
 
