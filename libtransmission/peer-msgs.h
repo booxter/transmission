@@ -44,13 +44,22 @@ public:
 
     struct UploadPipelinePulseDiagnostics
     {
+        uint64_t request_messages_seen = 0U;
+        uint64_t request_bytes_seen = 0U;
         uint64_t accepted_request_blocks = 0U;
         uint64_t accepted_request_bytes = 0U;
         uint64_t rejected_request_blocks_peer_choked = 0U;
         uint64_t rejected_request_blocks_reqq_full = 0U;
         uint64_t rejected_request_blocks_invalid = 0U;
+        uint64_t request_queue_high_watermark = 0U;
         uint64_t staged_piece_blocks = 0U;
         uint64_t staged_piece_bytes = 0U;
+        uint64_t read_ready_events = 0U;
+        uint64_t read_syscalls = 0U;
+        uint64_t read_bytes_transferred = 0U;
+        uint64_t read_piece_bytes = 0U;
+        int last_read_error_code = 0;
+        bool last_read_error_retryable = false;
         size_t current_write_buffer = 0U;
         size_t desired_write_buffer = 0U;
         size_t write_buffer_space = 0U;
@@ -87,6 +96,7 @@ public:
     [[nodiscard]] virtual bool has_upload_bandwidth_left() const noexcept = 0;
     [[nodiscard]] virtual bool is_waiting_for_can_write() const noexcept = 0;
     [[nodiscard]] virtual tr_peerIo::WriteAttemptDiagnostics last_write_attempt_diagnostics() const noexcept = 0;
+    [[nodiscard]] virtual tr_peerIo::SocketStateDiagnostics socket_state_diagnostics() const noexcept = 0;
     [[nodiscard]] virtual UploadPipelinePulseDiagnostics consume_upload_pipeline_diagnostics(
         uint64_t now_msec) const noexcept = 0;
 

@@ -13,6 +13,12 @@
 #include <event2/event.h>
 #include <event2/bufferevent.h>
 
+#if defined(__linux__)
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
+#include <netinet/tcp.h>
+#endif
+
 #include <libutp/utp.h>
 
 #include <fmt/format.h>
@@ -480,10 +486,15 @@ tr_peerIo::FlushResult tr_peerIo::try_read(size_t max)
     tr_error* error = nullptr;
     auto const n_read = socket_.try_read(buf, max, &error);
     auto piece_bytes = size_t{ 0U };
+    ++read_pulse_diagnostics_.syscalls;
+    read_pulse_diagnostics_.last_error_code = 0;
+    read_pulse_diagnostics_.last_error_retryable = false;
     set_enabled(Dir, error == nullptr || canRetryFromError(error->code));
 
     if (error != nullptr)
     {
+        read_pulse_diagnostics_.last_error_code = error->code;
+        read_pulse_diagnostics_.last_error_retryable = canRetryFromError(error->code);
         if (!canRetryFromError(error->code))
         {
             tr_logAddTraceIo(this, fmt::format("try_read err: n_read:{} errno:{} ({})", n_read, error->code, error->message));
@@ -496,6 +507,9 @@ tr_peerIo::FlushResult tr_peerIo::try_read(size_t max)
     {
         piece_bytes = can_read_wrapper();
     }
+
+    read_pulse_diagnostics_.bytes_transferred += n_read;
+    read_pulse_diagnostics_.piece_bytes += piece_bytes;
 
     return { n_read, piece_bytes };
 }
@@ -526,6 +540,7 @@ void tr_peerIo::event_read_cb([[maybe_unused]] evutil_socket_t fd, short /*event
     TR_ASSERT(io->socket_.handle.tcp == fd);
 
     io->pending_events_ &= ~EV_READ;
+    ++io->read_pulse_diagnostics_.ready_events;
     io->session_->bandwidthScheduler().on_can_read(*io);
 }
 
@@ -670,6 +685,56 @@ size_t tr_peerIo::pending_piece_output_size() const noexcept
 bool tr_peerIo::is_waiting_for_can_write() const noexcept
 {
     return (pending_events_ & EV_WRITE) != 0;
+}
+
+tr_peerIo::ReadPulseDiagnostics tr_peerIo::consume_read_pulse_diagnostics() noexcept
+{
+    auto diagnostics = read_pulse_diagnostics_;
+    read_pulse_diagnostics_ = {};
+    return diagnostics;
+}
+
+tr_peerIo::SocketStateDiagnostics tr_peerIo::socket_state_diagnostics() const noexcept
+{
+    auto diagnostics = SocketStateDiagnostics{};
+
+#if defined(__linux__)
+    if (!socket_.is_tcp() || socket_.handle.tcp < 0)
+    {
+        return diagnostics;
+    }
+
+    auto const fd = socket_.handle.tcp;
+    auto value = int{};
+
+    if (ioctl(fd, SIOCOUTQ, &value) == 0 && value >= 0)
+    {
+        diagnostics.has_send_queue = true;
+        diagnostics.send_queue = static_cast<uint64_t>(value);
+    }
+
+#ifdef SIOCOUTQNSD
+    value = 0;
+    if (ioctl(fd, SIOCOUTQNSD, &value) == 0 && value >= 0)
+    {
+        diagnostics.has_notsent_bytes = true;
+        diagnostics.notsent_bytes = static_cast<uint64_t>(value);
+    }
+#endif
+
+    auto info = tcp_info{};
+    auto info_len = socklen_t{ sizeof(info) };
+    if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &info_len) == 0)
+    {
+        diagnostics.has_tcp_info = true;
+        diagnostics.snd_cwnd = info.tcpi_snd_cwnd;
+        diagnostics.unacked = info.tcpi_unacked;
+        diagnostics.total_retrans = info.tcpi_total_retrans;
+        diagnostics.rtt_usec = info.tcpi_rtt;
+    }
+#endif
+
+    return diagnostics;
 }
 
 void tr_peerIo::flush_outbuf_soon()

@@ -2236,6 +2236,13 @@ struct UploadSourceDiagnostics
     PriorityTotals upload_rate_bps;
     PriorityTotals peers_with_accepted_requests;
     PriorityTotals accepted_request_blocks;
+    PriorityTotals request_messages_seen;
+    PriorityTotals request_bytes_seen;
+    PriorityTotals peers_with_read_ready;
+    PriorityTotals read_ready_events;
+    PriorityTotals peers_with_read_syscalls;
+    PriorityTotals read_syscalls;
+    PriorityTotals read_bytes_transferred;
     PriorityTotals peers_with_staged_piece_flow;
     PriorityTotals staged_piece_blocks;
     PriorityTotals staged_piece_bytes;
@@ -2279,14 +2286,24 @@ struct UploadPeerDiagnostics
     uint64_t last_write_piece_bytes = 0U;
     uint64_t accepted_request_blocks = 0U;
     uint64_t accepted_request_bytes = 0U;
+    uint64_t request_messages_seen = 0U;
+    uint64_t request_bytes_seen = 0U;
+    uint64_t request_queue_high_watermark = 0U;
     uint64_t rejected_request_blocks_peer_choked = 0U;
     uint64_t rejected_request_blocks_reqq_full = 0U;
     uint64_t rejected_request_blocks_invalid = 0U;
     uint64_t staged_piece_blocks = 0U;
     uint64_t staged_piece_bytes = 0U;
+    uint64_t read_ready_events = 0U;
+    uint64_t read_syscalls = 0U;
+    uint64_t read_bytes_transferred = 0U;
+    uint64_t read_piece_bytes = 0U;
+    int last_read_error_code = 0;
+    bool last_read_error_retryable = false;
     uint64_t current_write_buffer = 0U;
     uint64_t desired_write_buffer = 0U;
     uint64_t write_buffer_space = 0U;
+    tr_peerIo::SocketStateDiagnostics socket_state = {};
     tr_peerMsgs::UploadFillStopReason fill_stop_reason = tr_peerMsgs::UploadFillStopReason::None;
     uint64_t request_blocks = 0U;
     uint64_t piece_bytes = 0U;
@@ -2400,10 +2417,27 @@ struct UploadPeerDiagnostics
         }
 
         first = false;
+        auto const format_optional_u64 = [](bool present, auto value)
+        {
+            return present ? fmt::format("{}", value) : "-"s;
+        };
+        auto const socket_state = peer.socket_state.has_tcp_info || peer.socket_state.has_send_queue ||
+                peer.socket_state.has_notsent_bytes ?
+            fmt::format(
+                " sock:[sq:{} ns:{} cw:{} ua:{} rtt:{} rtx:{}]",
+                format_optional_u64(peer.socket_state.has_send_queue, peer.socket_state.send_queue),
+                format_optional_u64(peer.socket_state.has_notsent_bytes, peer.socket_state.notsent_bytes),
+                format_optional_u64(peer.socket_state.has_tcp_info, peer.socket_state.snd_cwnd),
+                format_optional_u64(peer.socket_state.has_tcp_info, peer.socket_state.unacked),
+                peer.socket_state.has_tcp_info ?
+                    fmt::format("{:.1f}", static_cast<double>(peer.socket_state.rtt_usec) / 1000.0) :
+                    "-"s,
+                format_optional_u64(peer.socket_state.has_tcp_info, peer.socket_state.total_retrans)) :
+            ""s;
         formatted += fmt::format(
             FMT_STRING(
-                "{}tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] "
-                "src:[req+:{}/{} rej:{}/{}/{} stg:{}/{} stop:{} buf:{}/{}/{}] req:{} piece:{} proto:{} up:{}}}"),
+                "{}tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] rd:[ev:{} sys:{} b:{} p:{} e:{} r:{}] "
+                "src:[rq:{}/{} qhi:{} req+:{}/{} rej:{}/{}/{} stg:{}/{} stop:{} buf:{}/{}/{}] req:{} piece:{} proto:{} up:{}}}{:s}"),
             include_priority ? fmt::format("{}:", format_priority_short_name(peer.priority)) : ""s,
             peer.torrent_id,
             peer.display_name,
@@ -2416,6 +2450,15 @@ struct UploadPeerDiagnostics
             peer.last_write_piece_bytes,
             peer.last_write_error_code,
             peer.last_write_retryable ? 1 : 0,
+            peer.read_ready_events,
+            peer.read_syscalls,
+            peer.read_bytes_transferred,
+            peer.read_piece_bytes,
+            peer.last_read_error_code,
+            peer.last_read_error_retryable ? 1 : 0,
+            peer.request_messages_seen,
+            peer.request_bytes_seen,
+            peer.request_queue_high_watermark,
             peer.accepted_request_blocks,
             peer.accepted_request_bytes,
             peer.rejected_request_blocks_peer_choked,
@@ -2430,7 +2473,8 @@ struct UploadPeerDiagnostics
             peer.request_blocks,
             peer.piece_bytes,
             peer.protocol_bytes,
-            peer.upload_rate_bps);
+            peer.upload_rate_bps,
+            socket_state);
     }
 
     return formatted;
@@ -2602,6 +2646,25 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             }
 
             auto const pipeline = peer->consume_upload_pipeline_diagnostics(now_msec);
+            if (pipeline.request_messages_seen != 0U)
+            {
+                diagnostics.request_messages_seen.add(priority, pipeline.request_messages_seen);
+                diagnostics.request_bytes_seen.add(priority, pipeline.request_bytes_seen);
+            }
+
+            if (pipeline.read_ready_events != 0U)
+            {
+                diagnostics.peers_with_read_ready.add(priority);
+                diagnostics.read_ready_events.add(priority, pipeline.read_ready_events);
+            }
+
+            if (pipeline.read_syscalls != 0U || pipeline.read_bytes_transferred != 0U || pipeline.last_read_error_code != 0)
+            {
+                diagnostics.peers_with_read_syscalls.add(priority);
+                diagnostics.read_syscalls.add(priority, pipeline.read_syscalls);
+                diagnostics.read_bytes_transferred.add(priority, pipeline.read_bytes_transferred);
+            }
+
             if (pipeline.accepted_request_blocks != 0U)
             {
                 diagnostics.peers_with_accepted_requests.add(priority);
@@ -2632,14 +2695,24 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                 .last_write_piece_bytes = last_write.piece_bytes,
                 .accepted_request_blocks = pipeline.accepted_request_blocks,
                 .accepted_request_bytes = pipeline.accepted_request_bytes,
+                .request_messages_seen = pipeline.request_messages_seen,
+                .request_bytes_seen = pipeline.request_bytes_seen,
+                .request_queue_high_watermark = pipeline.request_queue_high_watermark,
                 .rejected_request_blocks_peer_choked = pipeline.rejected_request_blocks_peer_choked,
                 .rejected_request_blocks_reqq_full = pipeline.rejected_request_blocks_reqq_full,
                 .rejected_request_blocks_invalid = pipeline.rejected_request_blocks_invalid,
                 .staged_piece_blocks = pipeline.staged_piece_blocks,
                 .staged_piece_bytes = pipeline.staged_piece_bytes,
+                .read_ready_events = pipeline.read_ready_events,
+                .read_syscalls = pipeline.read_syscalls,
+                .read_bytes_transferred = pipeline.read_bytes_transferred,
+                .read_piece_bytes = pipeline.read_piece_bytes,
+                .last_read_error_code = pipeline.last_read_error_code,
+                .last_read_error_retryable = pipeline.last_read_error_retryable,
                 .current_write_buffer = pipeline.current_write_buffer,
                 .desired_write_buffer = pipeline.desired_write_buffer,
                 .write_buffer_space = pipeline.write_buffer_space,
+                .socket_state = peer->socket_state_diagnostics(),
                 .fill_stop_reason = pipeline.fill_stop_reason,
                 .request_blocks = n_requests,
                 .piece_bytes = piece_bytes,
@@ -2654,7 +2727,9 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             else if (
                 priority != TR_PRI_HIGH &&
                 (n_requests != 0U || piece_bytes != 0U || protocol_bytes != 0U || upload_rate_bps != 0U ||
-                 pipeline.accepted_request_blocks != 0U || pipeline.staged_piece_blocks != 0U || is_waiting_for_can_write ||
+                 pipeline.request_messages_seen != 0U || pipeline.accepted_request_blocks != 0U ||
+                 pipeline.staged_piece_blocks != 0U || pipeline.read_ready_events != 0U || pipeline.read_syscalls != 0U ||
+                 is_waiting_for_can_write ||
                  (last_write.error_code != 0 && (last_write.bytes_transferred != 0U || last_write.retryable))))
             {
                 lower_peers.emplace_back(std::move(peer_diagnostics));
@@ -2673,8 +2748,9 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             "swarms={{peers:{} demand:{} maxed:{}}} "
             "peers={{connected:{} eligible:{} sending:{}}} "
             "work={{req_peers:{} req_blocks:{} piece_peers:{} piece_bytes:{} proto_peers:{} proto_bytes:{}}} "
-            "flow={{req+_peers:{} req+_blocks:{} stg_peers:{} stg_blocks:{} stg_bytes:{} wait:{} zero_eagain:{} "
-            "stop:{{req0:{} buf:{} choked:{} invalid:{} missing:{}}}}} "
+            "flow={{rd_ready_peers:{} rd_ready:{} rd_peers:{} rd_calls:{} rd_bytes:{} "
+            "rq_seen:{} rq_bytes:{} req+_peers:{} req+_blocks:{} stg_peers:{} stg_blocks:{} stg_bytes:{} "
+            "wait:{} zero_eagain:{} stop:{{req0:{} buf:{} choked:{} invalid:{} missing:{}}}}} "
             "rate_bps={}",
             diagnostics.swarms_with_peers.format(),
             diagnostics.swarms_with_demand.format(),
@@ -2688,6 +2764,13 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             diagnostics.piece_output_bytes.format(),
             diagnostics.peers_with_protocol_output.format(),
             diagnostics.protocol_output_bytes.format(),
+            diagnostics.peers_with_read_ready.format(),
+            diagnostics.read_ready_events.format(),
+            diagnostics.peers_with_read_syscalls.format(),
+            diagnostics.read_syscalls.format(),
+            diagnostics.read_bytes_transferred.format(),
+            diagnostics.request_messages_seen.format(),
+            diagnostics.request_bytes_seen.format(),
             diagnostics.peers_with_accepted_requests.format(),
             diagnostics.accepted_request_blocks.format(),
             diagnostics.peers_with_staged_piece_flow.format(),
@@ -2753,11 +2836,23 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             [](auto const& a, auto const& b)
             {
                 return std::tuple{
-                    a.piece_bytes,          a.request_blocks,          a.upload_rate_bps,    a.is_waiting_for_can_write,
-                    a.last_write_retryable, a.accepted_request_blocks, a.staged_piece_bytes,
+                    a.piece_bytes,
+                    a.request_blocks,
+                    a.request_messages_seen,
+                    a.upload_rate_bps,
+                    a.is_waiting_for_can_write,
+                    a.last_write_retryable,
+                    a.accepted_request_blocks,
+                    a.staged_piece_bytes,
                 } > std::tuple{
-                    b.piece_bytes,          b.request_blocks,          b.upload_rate_bps,    b.is_waiting_for_can_write,
-                    b.last_write_retryable, b.accepted_request_blocks, b.staged_piece_bytes,
+                    b.piece_bytes,
+                    b.request_blocks,
+                    b.request_messages_seen,
+                    b.upload_rate_bps,
+                    b.is_waiting_for_can_write,
+                    b.last_write_retryable,
+                    b.accepted_request_blocks,
+                    b.staged_piece_bytes,
                 };
             });
 

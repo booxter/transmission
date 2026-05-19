@@ -471,9 +471,21 @@ public:
         return io->last_write_attempt_diagnostics();
     }
 
+    [[nodiscard]] tr_peerIo::SocketStateDiagnostics socket_state_diagnostics() const noexcept override
+    {
+        return io->socket_state_diagnostics();
+    }
+
     [[nodiscard]] UploadPipelinePulseDiagnostics consume_upload_pipeline_diagnostics(uint64_t now_msec) const noexcept override
     {
         auto diagnostics = upload_pipeline_diagnostics_;
+        auto const read_diagnostics = io->consume_read_pulse_diagnostics();
+        diagnostics.read_ready_events = read_diagnostics.ready_events;
+        diagnostics.read_syscalls = read_diagnostics.syscalls;
+        diagnostics.read_bytes_transferred = read_diagnostics.bytes_transferred;
+        diagnostics.read_piece_bytes = read_diagnostics.piece_bytes;
+        diagnostics.last_read_error_code = read_diagnostics.last_error_code;
+        diagnostics.last_read_error_retryable = read_diagnostics.last_error_retryable;
         diagnostics.current_write_buffer = io->pending_protocol_output_size() + io->pending_piece_output_size();
         diagnostics.write_buffer_space = io->get_write_buffer_space(now_msec);
         diagnostics.desired_write_buffer = diagnostics.current_write_buffer + diagnostics.write_buffer_space;
@@ -1377,6 +1389,9 @@ void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
     if (canAddRequestFromPeer(msgs, *req))
     {
         msgs->peer_requested_.emplace_back(*req);
+        msgs->upload_pipeline_diagnostics_.request_queue_high_watermark = std::max<uint64_t>(
+            msgs->upload_pipeline_diagnostics_.request_queue_high_watermark,
+            std::size(msgs->peer_requested_));
         ++msgs->upload_pipeline_diagnostics_.accepted_request_blocks;
         msgs->upload_pipeline_diagnostics_.accepted_request_bytes += req->length;
         prefetchPieces(msgs);
@@ -1582,6 +1597,8 @@ ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmissi
             r.offset = payload.to_uint32();
             r.length = payload.to_uint32();
             logtrace(msgs, fmt::format(FMT_STRING("got Request: {:d}:{:d}->{:d}"), r.index, r.offset, r.length));
+            ++msgs->upload_pipeline_diagnostics_.request_messages_seen;
+            msgs->upload_pipeline_diagnostics_.request_bytes_seen += r.length;
             peerMadeRequest(msgs, &r);
             break;
         }

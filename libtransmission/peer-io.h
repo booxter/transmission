@@ -62,6 +62,29 @@ public:
         bool retryable = false;
     };
 
+    struct ReadPulseDiagnostics
+    {
+        uint64_t ready_events = 0U;
+        uint64_t syscalls = 0U;
+        uint64_t bytes_transferred = 0U;
+        uint64_t piece_bytes = 0U;
+        int last_error_code = 0;
+        bool last_error_retryable = false;
+    };
+
+    struct SocketStateDiagnostics
+    {
+        bool has_send_queue = false;
+        uint64_t send_queue = 0U;
+        bool has_notsent_bytes = false;
+        uint64_t notsent_bytes = 0U;
+        bool has_tcp_info = false;
+        uint32_t snd_cwnd = 0U;
+        uint32_t unacked = 0U;
+        uint32_t total_retrans = 0U;
+        uint32_t rtt_usec = 0U;
+    };
+
     tr_peerIo(
         tr_session* session_in,
         tr_sha1_digest_t const* info_hash,
@@ -190,6 +213,8 @@ public:
     {
         return last_write_attempt_;
     }
+    [[nodiscard]] ReadPulseDiagnostics consume_read_pulse_diagnostics() noexcept;
+    [[nodiscard]] SocketStateDiagnostics socket_state_diagnostics() const noexcept;
 
     [[nodiscard]] auto get_piece_speed_bytes_per_second(uint64_t now, tr_direction dir) const noexcept
     {
@@ -419,4 +444,5 @@ private:
     bool defer_immediate_outbuf_ready_ = false;
 
     WriteAttemptDiagnostics last_write_attempt_ = {};
+    ReadPulseDiagnostics read_pulse_diagnostics_ = {};
 };

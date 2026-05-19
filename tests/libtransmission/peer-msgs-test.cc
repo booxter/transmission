@@ -278,14 +278,22 @@ TEST_F(PeerMsgsTest, capturesUploadPipelinePulseDiagnostics)
 
     EXPECT_EQ(1U, diagnostics.accepted_request_blocks);
     EXPECT_EQ(length, diagnostics.accepted_request_bytes);
+    EXPECT_EQ(1U, diagnostics.request_messages_seen);
+    EXPECT_EQ(length, diagnostics.request_bytes_seen);
+    EXPECT_EQ(1U, diagnostics.request_queue_high_watermark);
     EXPECT_EQ(1U, diagnostics.staged_piece_blocks);
     EXPECT_EQ(length, diagnostics.staged_piece_bytes);
+    EXPECT_GE(diagnostics.read_syscalls, 1U);
+    EXPECT_GE(diagnostics.read_bytes_transferred, request.size());
+    EXPECT_EQ(0, diagnostics.last_read_error_code);
     EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::NoRequests, diagnostics.fill_stop_reason);
     EXPECT_LE(diagnostics.current_write_buffer, diagnostics.desired_write_buffer);
     EXPECT_EQ(diagnostics.desired_write_buffer - diagnostics.current_write_buffer, diagnostics.write_buffer_space);
 
+    EXPECT_EQ(0U, cleared.request_messages_seen);
     EXPECT_EQ(0U, cleared.accepted_request_blocks);
     EXPECT_EQ(0U, cleared.staged_piece_blocks);
+    EXPECT_EQ(0U, cleared.read_syscalls);
     EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::None, cleared.fill_stop_reason);
 
     runInSessionThreadAndWait(
@@ -330,6 +338,8 @@ TEST_F(PeerMsgsTest, recordsMissingPieceStopReasonWhenReadFails)
 
     EXPECT_EQ(1U, diagnostics.accepted_request_blocks);
     EXPECT_EQ(length, diagnostics.accepted_request_bytes);
+    EXPECT_EQ(1U, diagnostics.request_messages_seen);
+    EXPECT_EQ(length, diagnostics.request_bytes_seen);
     EXPECT_EQ(0U, diagnostics.staged_piece_blocks);
     EXPECT_EQ(0U, diagnostics.staged_piece_bytes);
     EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::MissingPiece, diagnostics.fill_stop_reason);
