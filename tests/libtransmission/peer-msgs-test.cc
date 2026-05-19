@@ -180,7 +180,12 @@ TEST_F(PeerMsgsTest, respondsImmediatelyToPeerRequestWithoutWaitingForPulse)
     auto const request = makeRequestMessage(Piece, Offset, length);
     auto const expected = makePieceMessage(Piece, Offset, length);
 
-    runInSessionThreadAndWait([&]() { peer->set_choke(false); });
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            io->set_defer_immediate_outbuf_ready(true);
+            peer->set_choke(false);
+        });
     EXPECT_TRUE(readAvailable(peer_sock).empty());
 
     ASSERT_TRUE(writeAll(peer_sock, request));
@@ -282,8 +287,11 @@ TEST_F(PeerMsgsTest, capturesUploadPipelinePulseDiagnostics)
     EXPECT_EQ(length, diagnostics.request_bytes_seen);
     EXPECT_EQ(1U, diagnostics.request_queue_high_watermark);
     EXPECT_EQ(0U, diagnostics.current_request_queue_depth);
+    EXPECT_EQ(0U, diagnostics.current_request_queue_bytes);
     EXPECT_FALSE(diagnostics.has_peer_advertised_reqq);
     EXPECT_EQ(0U, diagnostics.peer_advertised_reqq);
+    EXPECT_LE(diagnostics.current_staged_request_blocks, 1U);
+    EXPECT_LE(diagnostics.current_staged_request_bytes, length);
     EXPECT_EQ(1U, diagnostics.staged_piece_blocks);
     EXPECT_EQ(length, diagnostics.staged_piece_bytes);
     EXPECT_GE(diagnostics.read_syscalls, 1U);
@@ -295,6 +303,9 @@ TEST_F(PeerMsgsTest, capturesUploadPipelinePulseDiagnostics)
 
     EXPECT_EQ(0U, cleared.request_messages_seen);
     EXPECT_EQ(0U, cleared.accepted_request_blocks);
+    EXPECT_EQ(0U, cleared.current_request_queue_bytes);
+    EXPECT_LE(cleared.current_staged_request_blocks, 1U);
+    EXPECT_LE(cleared.current_staged_request_bytes, length);
     EXPECT_EQ(0U, cleared.staged_piece_blocks);
     EXPECT_EQ(0U, cleared.read_syscalls);
     EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::None, cleared.fill_stop_reason);

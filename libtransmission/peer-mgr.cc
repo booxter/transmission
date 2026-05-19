@@ -2290,6 +2290,7 @@ struct UploadPeerDiagnostics
     uint64_t request_bytes_seen = 0U;
     uint64_t request_queue_high_watermark = 0U;
     uint64_t current_request_queue_depth = 0U;
+    uint64_t current_request_queue_bytes = 0U;
     uint64_t ms_since_last_request_message = 0U;
     uint64_t ms_since_peer_interested_change = 0U;
     uint64_t ms_since_peer_choke_change = 0U;
@@ -2299,6 +2300,8 @@ struct UploadPeerDiagnostics
     uint64_t peer_choke_transitions = 0U;
     bool has_peer_advertised_reqq = false;
     uint64_t peer_advertised_reqq = 0U;
+    uint64_t current_staged_request_blocks = 0U;
+    uint64_t current_staged_request_bytes = 0U;
     uint64_t rejected_request_blocks_peer_choked = 0U;
     uint64_t rejected_request_blocks_reqq_full = 0U;
     uint64_t rejected_request_blocks_invalid = 0U;
@@ -2319,6 +2322,9 @@ struct UploadPeerDiagnostics
     uint64_t piece_bytes = 0U;
     uint64_t protocol_bytes = 0U;
     uint64_t uploadable_bytes_to_peer = 0U;
+    uint64_t promised_kernel_send_queue_bytes = 0U;
+    uint64_t promised_total_block_equivalent = 0U;
+    uint64_t promised_total_bytes = 0U;
     uint64_t upload_rate_bps = 0U;
 };
 
@@ -2361,6 +2367,11 @@ struct UploadPeerDiagnostics
     }
 
     return "?"sv;
+}
+
+[[nodiscard]] constexpr uint64_t ceil_div_u64(uint64_t num, uint64_t den) noexcept
+{
+    return den == 0U ? 0U : (num + den - 1U) / den;
 }
 
 [[nodiscard]] bool swarm_has_upload_demand(tr_swarm const* swarm, uint64_t now_msec)
@@ -2470,6 +2481,7 @@ struct UploadPeerDiagnostics
             FMT_STRING(
                 "{}tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] rd:[ev:{} sys:{} b:{} p:{} e:{} r:{}] "
                 "ctx:[reqq:{} upb:{} age:{{rq:{} i:{} c:{} q0:{} q1:{}}} tr:{}/{}] "
+                "prom:[q:{}/{} stg:{}/{} k:{} blk:{}/{} b:{}] "
                 "src:[rq:{}/{} q:{}/{} req+:{}/{} rej:{}/{}/{} stg:{}/{} stop:{} buf:{}/{}/{}] req:{} piece:{} proto:{} up:{}}}{:s}"),
             include_priority ? fmt::format("{}:", format_priority_short_name(peer.priority)) : ""s,
             peer.torrent_id,
@@ -2498,6 +2510,14 @@ struct UploadPeerDiagnostics
             peer.ms_since_request_queue_became_nonempty,
             peer.peer_interested_transitions,
             peer.peer_choke_transitions,
+            peer.current_request_queue_depth,
+            peer.current_request_queue_bytes,
+            peer.current_staged_request_blocks,
+            peer.current_staged_request_bytes,
+            peer.promised_kernel_send_queue_bytes,
+            peer.promised_total_block_equivalent,
+            format_optional_u64(peer.has_peer_advertised_reqq, peer.peer_advertised_reqq),
+            peer.promised_total_bytes,
             peer.request_messages_seen,
             peer.request_bytes_seen,
             peer.current_request_queue_depth,
@@ -2723,6 +2743,14 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
 
             note_fill_stop_reason(diagnostics, priority, pipeline.fill_stop_reason);
 
+            auto const socket_state = peer->socket_state_diagnostics();
+            auto const promised_kernel_send_queue_bytes = socket_state.has_send_queue ? socket_state.send_queue : 0U;
+            auto const promised_total_block_equivalent = pipeline.current_request_queue_depth +
+                pipeline.current_staged_request_blocks +
+                ceil_div_u64(promised_kernel_send_queue_bytes, tr_block_info::BlockSize);
+            auto const promised_total_bytes = pipeline.current_request_queue_bytes + pipeline.current_staged_request_bytes +
+                promised_kernel_send_queue_bytes;
+
             auto peer_diagnostics = UploadPeerDiagnostics{
                 .priority = priority,
                 .torrent_id = tor->id(),
@@ -2742,6 +2770,7 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                 .request_bytes_seen = pipeline.request_bytes_seen,
                 .request_queue_high_watermark = pipeline.request_queue_high_watermark,
                 .current_request_queue_depth = pipeline.current_request_queue_depth,
+                .current_request_queue_bytes = pipeline.current_request_queue_bytes,
                 .ms_since_last_request_message = pipeline.ms_since_last_request_message,
                 .ms_since_peer_interested_change = pipeline.ms_since_peer_interested_change,
                 .ms_since_peer_choke_change = pipeline.ms_since_peer_choke_change,
@@ -2751,6 +2780,8 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                 .peer_choke_transitions = pipeline.peer_choke_transitions,
                 .has_peer_advertised_reqq = pipeline.has_peer_advertised_reqq,
                 .peer_advertised_reqq = pipeline.peer_advertised_reqq,
+                .current_staged_request_blocks = pipeline.current_staged_request_blocks,
+                .current_staged_request_bytes = pipeline.current_staged_request_bytes,
                 .rejected_request_blocks_peer_choked = pipeline.rejected_request_blocks_peer_choked,
                 .rejected_request_blocks_reqq_full = pipeline.rejected_request_blocks_reqq_full,
                 .rejected_request_blocks_invalid = pipeline.rejected_request_blocks_invalid,
@@ -2765,12 +2796,15 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                 .current_write_buffer = pipeline.current_write_buffer,
                 .desired_write_buffer = pipeline.desired_write_buffer,
                 .write_buffer_space = pipeline.write_buffer_space,
-                .socket_state = peer->socket_state_diagnostics(),
+                .socket_state = socket_state,
                 .fill_stop_reason = pipeline.fill_stop_reason,
                 .request_blocks = n_requests,
                 .piece_bytes = piece_bytes,
                 .protocol_bytes = protocol_bytes,
                 .uploadable_bytes_to_peer = uploadable_bytes_to_peer(tor, peer),
+                .promised_kernel_send_queue_bytes = promised_kernel_send_queue_bytes,
+                .promised_total_block_equivalent = promised_total_block_equivalent,
+                .promised_total_bytes = promised_total_bytes,
                 .upload_rate_bps = upload_rate_bps,
             };
 

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <deque>
 #include <cstring>
 #include <ctime>
 #include <iterator>
@@ -492,6 +493,7 @@ public:
         diagnostics.last_read_error_code = read_diagnostics.last_error_code;
         diagnostics.last_read_error_retryable = read_diagnostics.last_error_retryable;
         diagnostics.current_request_queue_depth = std::size(peer_requested_);
+        diagnostics.current_request_queue_bytes = peer_requested_bytes_;
         diagnostics.ms_since_last_request_message = last_peer_request_message_at_msec_ != 0U ?
             now_msec - last_peer_request_message_at_msec_ :
             0U;
@@ -508,6 +510,8 @@ public:
             0U;
         diagnostics.has_peer_advertised_reqq = reqq.has_value();
         diagnostics.peer_advertised_reqq = reqq.value_or(0U);
+        diagnostics.current_staged_request_blocks = std::size(staged_peer_request_lengths_);
+        diagnostics.current_staged_request_bytes = staged_peer_request_bytes_;
         diagnostics.current_write_buffer = io->pending_protocol_output_size() + io->pending_piece_output_size();
         diagnostics.write_buffer_space = io->get_write_buffer_space(now_msec);
         diagnostics.desired_write_buffer = diagnostics.current_write_buffer + diagnostics.write_buffer_space;
@@ -795,6 +799,9 @@ public:
     std::vector<QueuedPeerRequest> peer_requested_;
 
     mutable UploadPipelinePulseDiagnostics upload_pipeline_diagnostics_ = {};
+    std::deque<uint32_t> staged_peer_request_lengths_ = {};
+    uint64_t staged_peer_request_bytes_ = 0U;
+    uint64_t peer_requested_bytes_ = 0U;
 
     uint64_t last_peer_request_message_at_msec_ = 0U;
     uint64_t peer_interested_changed_at_msec_ = 0U;
@@ -842,6 +849,43 @@ public:
         {
             request_queue_became_empty_at_msec_ = now_msec;
         }
+    }
+
+    void note_peer_request_accepted(uint32_t length)
+    {
+        peer_requested_bytes_ += length;
+    }
+
+    void note_peer_request_popped(uint32_t length)
+    {
+        TR_ASSERT(peer_requested_bytes_ >= length);
+        peer_requested_bytes_ -= length;
+    }
+
+    void note_staged_peer_request(uint32_t length)
+    {
+        staged_peer_request_lengths_.emplace_back(length);
+        staged_peer_request_bytes_ += length;
+    }
+
+    void note_piece_bytes_transferred_to_socket(size_t bytes_transferred)
+    {
+        while (bytes_transferred != 0U && !std::empty(staged_peer_request_lengths_))
+        {
+            auto& front = staged_peer_request_lengths_.front();
+            auto const payload = std::min(bytes_transferred, static_cast<size_t>(front));
+
+            front -= payload;
+            bytes_transferred -= payload;
+            staged_peer_request_bytes_ -= payload;
+
+            if (front == 0U)
+            {
+                staged_peer_request_lengths_.pop_front();
+            }
+        }
+
+        TR_ASSERT(bytes_transferred == 0U);
     }
 
 private:
@@ -990,6 +1034,7 @@ void cancelAllRequestsToClient(tr_peerMsgsImpl* msgs)
     }
 
     msgs->peer_requested_.clear();
+    msgs->peer_requested_bytes_ = 0U;
     msgs->note_request_queue_state(tr_time_msec());
 }
 
@@ -1443,6 +1488,7 @@ void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
     if (canAddRequestFromPeer(msgs, *req))
     {
         msgs->peer_requested_.emplace_back(*req);
+        msgs->note_peer_request_accepted(req->length);
         msgs->note_request_queue_state(now_msec);
         msgs->upload_pipeline_diagnostics_.request_queue_high_watermark = std::max<uint64_t>(
             msgs->upload_pipeline_diagnostics_.request_queue_high_watermark,
@@ -1871,6 +1917,7 @@ void didWrite(tr_peerIo* /*io*/, size_t bytes_written, bool was_piece_data, void
 
     if (was_piece_data)
     {
+        msgs->note_piece_bytes_transferred_to_socket(bytes_written);
         msgs->publish(tr_peer_event::SentPieceData(bytes_written));
     }
 
@@ -2124,6 +2171,7 @@ size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_
     {
         req = msgs->peer_requested_.front();
         msgs->peer_requested_.erase(std::begin(msgs->peer_requested_));
+        msgs->note_peer_request_popped(req.length);
         msgs->note_request_queue_state(now_msec);
 
         if (msgs->isValidRequest(req) && msgs->torrent->hasPiece(req.index))
@@ -2169,6 +2217,7 @@ size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_
                 auto const n = std::size(out);
                 TR_ASSERT(n == msglen);
                 msgs->io->write(out, true);
+                msgs->note_staged_peer_request(req.length);
                 bytes_written += n;
                 ++msgs->upload_pipeline_diagnostics_.staged_piece_blocks;
                 msgs->upload_pipeline_diagnostics_.staged_piece_bytes += req.length;

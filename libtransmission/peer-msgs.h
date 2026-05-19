@@ -47,6 +47,7 @@ public:
         uint64_t request_messages_seen = 0U;
         uint64_t request_bytes_seen = 0U;
         uint64_t current_request_queue_depth = 0U;
+        uint64_t current_request_queue_bytes = 0U;
         uint64_t accepted_request_blocks = 0U;
         uint64_t accepted_request_bytes = 0U;
         uint64_t rejected_request_blocks_peer_choked = 0U;
@@ -62,6 +63,8 @@ public:
         uint64_t peer_choke_transitions = 0U;
         size_t peer_advertised_reqq = 0U;
         bool has_peer_advertised_reqq = false;
+        uint64_t current_staged_request_blocks = 0U;
+        uint64_t current_staged_request_bytes = 0U;
         uint64_t staged_piece_blocks = 0U;
         uint64_t staged_piece_bytes = 0U;
         uint64_t read_ready_events = 0U;
