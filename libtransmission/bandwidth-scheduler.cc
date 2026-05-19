@@ -201,11 +201,38 @@ private:
         return std::min(a, b);
     }
 
+    template<typename QueueContainer>
+    void note_pending_curve_work(QueueContainer const& queues, tr_direction dir)
+    {
+        for (size_t i = 0U; i < std::size(queues); ++i)
+        {
+            if (!std::empty(queues[i]))
+            {
+                current_pulse_outcome_.note_pending(dir, priority_from_index(i));
+            }
+        }
+    }
+
+    void finish_limited_retention_pulse()
+    {
+        if (pulse_duration_msec_ == 0U)
+        {
+            return;
+        }
+
+        note_pending_curve_work(read_queues_, TR_DOWN);
+        note_pending_curve_work(write_queues_, TR_UP);
+        retention_policy_->on_pulse_finish(current_pulse_outcome_);
+    }
+
     void reset_limited_retention(uint64_t period_msec)
     {
+        finish_limited_retention_pulse();
+
         pulse_start_msec_ = tr_time_msec();
         pulse_duration_msec_ = period_msec;
         pulse_deadline_msec_ = pulse_start_msec_ + period_msec;
+        current_pulse_outcome_ = {};
 
         auto pulse = tr_strict_bandwidth_curve_pulse{};
         pulse.start_msec = pulse_start_msec_;
@@ -250,6 +277,8 @@ private:
 
     void charge_retained_piece_bytes(tr_direction dir, tr_priority_t priority, tr_peerIo const& io, size_t piece_bytes)
     {
+        current_pulse_outcome_.note_piece_bytes(dir, priority, piece_bytes);
+
         auto charge = tr_strict_bandwidth_curve_charge{};
         charge.dir = dir;
         charge.priority = priority;
@@ -445,6 +474,7 @@ private:
             auto const admission = retained_piece_admit(TR_DOWN, priority, *queue.front());
             if (admission.piece_limit == 0U)
             {
+                current_pulse_outcome_.note_blocked(TR_DOWN, priority);
                 gated_wakeup_msec = min_nonzero(gated_wakeup_msec, admission.next_wakeup_msec);
                 queue.push_back(std::move(queue.front()));
                 queue.pop_front();
@@ -478,6 +508,11 @@ private:
             TR_ASSERT(!queue.front()->is_cleared());
 
             auto const admission = retained_piece_admit(TR_UP, priority, *queue.front());
+            if (admission.piece_limit == 0U)
+            {
+                current_pulse_outcome_.note_blocked(TR_UP, priority);
+            }
+
             if (admission.piece_limit == 0U && !queue.front()->has_pending_protocol_output())
             {
                 gated_wakeup_msec = min_nonzero(gated_wakeup_msec, admission.next_wakeup_msec);
@@ -567,6 +602,7 @@ private:
     WriteQueues write_queues_ = {};
     std::unordered_set<tr_peerIo*> queued_reads_;
     std::unordered_set<tr_peerIo*> queued_writes_;
+    tr_strict_bandwidth_curve_pulse_outcome current_pulse_outcome_ = {};
     uint64_t pulse_start_msec_ = 0U;
     uint64_t pulse_duration_msec_ = 0U;
     uint64_t pulse_deadline_msec_ = 0U;

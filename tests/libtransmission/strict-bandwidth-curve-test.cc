@@ -140,4 +140,30 @@ TEST(StrictBandwidthCurvePolicyTest, NonApplyingWorkIsNeverCurveGated)
     EXPECT_EQ(0U, result.next_wakeup_msec);
 }
 
+TEST(StrictBandwidthCurvePolicyTest, pulseOutcomeTracksPieceBytesByDirectionAndPriority)
+{
+    auto outcome = tr_strict_bandwidth_curve_pulse_outcome{};
+
+    outcome.note_piece_bytes(TR_UP, TR_PRI_HIGH, 111U);
+    outcome.note_piece_bytes(TR_UP, TR_PRI_HIGH, 222U);
+    outcome.note_piece_bytes(TR_DOWN, TR_PRI_LOW, 333U);
+
+    EXPECT_EQ(333U, outcome.by_direction[0].piece_bytes[0]);
+    EXPECT_EQ(0U, outcome.by_direction[0].piece_bytes[1]);
+    EXPECT_EQ(333U, outcome.by_direction[1].piece_bytes[2]);
+}
+
+TEST(StrictBandwidthCurvePolicyTest, pulseOutcomeTracksBlockedAndPendingWork)
+{
+    auto outcome = tr_strict_bandwidth_curve_pulse_outcome{};
+
+    outcome.note_blocked(TR_UP, TR_PRI_NORMAL);
+    outcome.note_pending(TR_DOWN, TR_PRI_LOW);
+
+    EXPECT_TRUE(outcome.by_direction[0].had_blocked_work[1]);
+    EXPECT_FALSE(outcome.by_direction[0].had_blocked_work[0]);
+    EXPECT_TRUE(outcome.by_direction[1].has_pending_work[2]);
+    EXPECT_FALSE(outcome.by_direction[1].has_pending_work[1]);
+}
+
 } // namespace libtransmission::test

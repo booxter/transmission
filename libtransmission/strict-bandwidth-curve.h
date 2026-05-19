@@ -9,6 +9,7 @@
 #error only libtransmission should #include this header.
 #endif
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -47,6 +48,52 @@ struct tr_strict_bandwidth_curve_admit_result
 
 struct tr_strict_bandwidth_curve_pulse_outcome
 {
+    struct DirectionState
+    {
+        std::array<size_t, 3> piece_bytes = {};
+        std::array<bool, 3> had_blocked_work = {};
+        std::array<bool, 3> has_pending_work = {};
+    };
+
+    std::array<DirectionState, 2> by_direction = {};
+
+    void note_piece_bytes(tr_direction dir, tr_priority_t priority, size_t n_bytes) noexcept
+    {
+        by_direction[direction_index(dir)].piece_bytes[priority_index(priority)] += n_bytes;
+    }
+
+    void note_blocked(tr_direction dir, tr_priority_t priority) noexcept
+    {
+        by_direction[direction_index(dir)].had_blocked_work[priority_index(priority)] = true;
+    }
+
+    void note_pending(tr_direction dir, tr_priority_t priority) noexcept
+    {
+        by_direction[direction_index(dir)].has_pending_work[priority_index(priority)] = true;
+    }
+
+private:
+    [[nodiscard]] static constexpr size_t direction_index(tr_direction dir) noexcept
+    {
+        return dir == TR_UP ? size_t{ 0U } : size_t{ 1U };
+    }
+
+    [[nodiscard]] static constexpr size_t priority_index(tr_priority_t priority) noexcept
+    {
+        switch (priority)
+        {
+        case TR_PRI_HIGH:
+            return size_t{ 0U };
+
+        case TR_PRI_NORMAL:
+            return size_t{ 1U };
+
+        case TR_PRI_LOW:
+            return size_t{ 2U };
+        }
+
+        return size_t{ 1U };
+    }
 };
 
 class tr_strict_bandwidth_curve_policy
