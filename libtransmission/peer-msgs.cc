@@ -471,6 +471,16 @@ public:
         return io->last_write_attempt_diagnostics();
     }
 
+    [[nodiscard]] UploadPipelinePulseDiagnostics consume_upload_pipeline_diagnostics(uint64_t now_msec) const noexcept override
+    {
+        auto diagnostics = upload_pipeline_diagnostics_;
+        diagnostics.current_write_buffer = io->pending_protocol_output_size() + io->pending_piece_output_size();
+        diagnostics.write_buffer_space = io->get_write_buffer_space(now_msec);
+        diagnostics.desired_write_buffer = diagnostics.current_write_buffer + diagnostics.write_buffer_space;
+        upload_pipeline_diagnostics_ = {};
+        return diagnostics;
+    }
+
     [[nodiscard]] std::pair<tr_address, tr_port> socketAddress() const override
     {
         return io->socket_address();
@@ -747,6 +757,8 @@ public:
     };
 
     std::vector<QueuedPeerRequest> peer_requested_;
+
+    mutable UploadPipelinePulseDiagnostics upload_pipeline_diagnostics_ = {};
 
     std::vector<tr_pex> pex;
     std::vector<tr_pex> pex6;
@@ -1321,24 +1333,28 @@ void prefetchPieces(tr_peerMsgsImpl* msgs)
 {
     if (msgs->peer_is_choked_)
     {
+        ++msgs->upload_pipeline_diagnostics_.rejected_request_blocks_peer_choked;
         logtrace(msgs, "rejecting request from choked peer");
         return false;
     }
 
     if (std::size(msgs->peer_requested_) >= ReqQ)
     {
+        ++msgs->upload_pipeline_diagnostics_.rejected_request_blocks_reqq_full;
         logtrace(msgs, "rejecting request ... reqq is full");
         return false;
     }
 
     if (!tr_torrentReqIsValid(msgs->torrent, req.index, req.offset, req.length))
     {
+        ++msgs->upload_pipeline_diagnostics_.rejected_request_blocks_invalid;
         logtrace(msgs, "rejecting an invalid request.");
         return false;
     }
 
     if (!msgs->torrent->hasPiece(req.index))
     {
+        ++msgs->upload_pipeline_diagnostics_.rejected_request_blocks_invalid;
         logtrace(msgs, "rejecting request for a piece we don't have.");
         return false;
     }
@@ -1350,6 +1366,7 @@ size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_
 
 void fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_msec)
 {
+    msgs->upload_pipeline_diagnostics_.fill_stop_reason = tr_peerMsgs::UploadFillStopReason::None;
     while (fillOutputBufferImpl(msgs, now_sec, now_msec) != 0U)
     {
     }
@@ -1360,6 +1377,8 @@ void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
     if (canAddRequestFromPeer(msgs, *req))
     {
         msgs->peer_requested_.emplace_back(*req);
+        ++msgs->upload_pipeline_diagnostics_.accepted_request_blocks;
+        msgs->upload_pipeline_diagnostics_.accepted_request_bytes += req->length;
         prefetchPieces(msgs);
         fillOutputBuffer(msgs, tr_time(), tr_time_msec());
     }
@@ -1934,10 +1953,12 @@ void updateBlockRequests(tr_peerMsgsImpl* msgs)
 
 size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_msec)
 {
+    auto* const diagnostics_msgs = msgs;
     size_t bytes_written = 0;
     struct peer_request req;
     bool const have_messages = !std::empty(msgs->outMessages);
     bool const fext = msgs->io->supports_fext();
+    auto fill_stop_reason = tr_peerMsgs::UploadFillStopReason::None;
 
     // --- Protocol messages
 
@@ -2065,18 +2086,22 @@ size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_
                 TR_ASSERT(n == msglen);
                 msgs->io->write(out, true);
                 bytes_written += n;
+                ++msgs->upload_pipeline_diagnostics_.staged_piece_blocks;
+                msgs->upload_pipeline_diagnostics_.staged_piece_bytes += req.length;
                 msgs->clientSentAnythingAt = now_sec;
                 msgs->blocks_sent_to_peer.add(tr_time(), 1);
             }
 
             if (err)
             {
+                fill_stop_reason = tr_peerMsgs::UploadFillStopReason::MissingPiece;
                 bytes_written = 0;
                 msgs = nullptr;
             }
         }
         else if (fext) /* peer needs a reject message */
         {
+            fill_stop_reason = tr_peerMsgs::UploadFillStopReason::InvalidRequest;
             protocolSendReject(msgs, &req);
         }
 
@@ -2084,6 +2109,18 @@ size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_
         {
             prefetchPieces(msgs);
         }
+    }
+    else if (msgs->peer_is_choked_)
+    {
+        fill_stop_reason = tr_peerMsgs::UploadFillStopReason::PeerChoked;
+    }
+    else if (!std::empty(msgs->peer_requested_))
+    {
+        fill_stop_reason = tr_peerMsgs::UploadFillStopReason::BufferTargetReached;
+    }
+    else
+    {
+        fill_stop_reason = tr_peerMsgs::UploadFillStopReason::NoRequests;
     }
 
     // --- Keepalive
@@ -2093,6 +2130,11 @@ size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_
         logtrace(msgs, "sending a keepalive message");
         msgs->outMessages.add_uint32(0);
         msgs->pokeBatchPeriod(ImmediatePriorityIntervalSecs);
+    }
+
+    if (bytes_written == 0U)
+    {
+        diagnostics_msgs->upload_pipeline_diagnostics_.fill_stop_reason = fill_stop_reason;
     }
 
     return bytes_written;

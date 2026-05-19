@@ -2264,11 +2264,46 @@ struct HighPeerDiagnostics
     bool last_write_retryable = false;
     uint64_t last_write_bytes = 0U;
     uint64_t last_write_piece_bytes = 0U;
+    uint64_t accepted_request_blocks = 0U;
+    uint64_t accepted_request_bytes = 0U;
+    uint64_t rejected_request_blocks_peer_choked = 0U;
+    uint64_t rejected_request_blocks_reqq_full = 0U;
+    uint64_t rejected_request_blocks_invalid = 0U;
+    uint64_t staged_piece_blocks = 0U;
+    uint64_t staged_piece_bytes = 0U;
+    uint64_t current_write_buffer = 0U;
+    uint64_t desired_write_buffer = 0U;
+    uint64_t write_buffer_space = 0U;
+    tr_peerMsgs::UploadFillStopReason fill_stop_reason = tr_peerMsgs::UploadFillStopReason::None;
     uint64_t request_blocks = 0U;
     uint64_t piece_bytes = 0U;
     uint64_t protocol_bytes = 0U;
     uint64_t upload_rate_bps = 0U;
 };
+
+[[nodiscard]] auto format_upload_fill_stop_reason(tr_peerMsgs::UploadFillStopReason reason)
+{
+    using Reason = tr_peerMsgs::UploadFillStopReason;
+
+    switch (reason)
+    {
+    case Reason::None:
+        return "none";
+    case Reason::NoRequests:
+        return "req0";
+    case Reason::BufferTargetReached:
+        return "buf";
+    case Reason::PeerChoked:
+        return "choked";
+    case Reason::InvalidRequest:
+        return "invalid";
+    case Reason::MissingPiece:
+        return "missing";
+    }
+
+    TR_ASSERT(false);
+    return "unknown";
+}
 
 [[nodiscard]] bool swarm_has_upload_demand(tr_swarm const* swarm, uint64_t now_msec)
 {
@@ -2336,7 +2371,9 @@ struct HighPeerDiagnostics
 
         first = false;
         formatted += fmt::format(
-            FMT_STRING("tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] req:{} piece:{} proto:{} up:{}}}"),
+            FMT_STRING(
+                "tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] "
+                "src:[req+:{}/{} rej:{}/{}/{} stg:{}/{} stop:{} buf:{}/{}/{}] req:{} piece:{} proto:{} up:{}}}"),
             peer.torrent_id,
             peer.display_name,
             peer.is_interested ? 1 : 0,
@@ -2348,6 +2385,17 @@ struct HighPeerDiagnostics
             peer.last_write_piece_bytes,
             peer.last_write_error_code,
             peer.last_write_retryable ? 1 : 0,
+            peer.accepted_request_blocks,
+            peer.accepted_request_bytes,
+            peer.rejected_request_blocks_peer_choked,
+            peer.rejected_request_blocks_reqq_full,
+            peer.rejected_request_blocks_invalid,
+            peer.staged_piece_blocks,
+            peer.staged_piece_bytes,
+            format_upload_fill_stop_reason(peer.fill_stop_reason),
+            peer.current_write_buffer,
+            peer.desired_write_buffer,
+            peer.write_buffer_space,
             peer.request_blocks,
             peer.piece_bytes,
             peer.protocol_bytes,
@@ -2478,6 +2526,7 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             if (priority == TR_PRI_HIGH && (keep_high_swarm || is_interested || is_choked))
             {
                 auto const last_write = peer->last_write_attempt_diagnostics();
+                auto const pipeline = peer->consume_upload_pipeline_diagnostics(now_msec);
                 high_peers.emplace_back(
                     HighPeerDiagnostics{
                         .torrent_id = tor->id(),
@@ -2491,6 +2540,17 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                         .last_write_retryable = last_write.retryable,
                         .last_write_bytes = last_write.bytes_transferred,
                         .last_write_piece_bytes = last_write.piece_bytes,
+                        .accepted_request_blocks = pipeline.accepted_request_blocks,
+                        .accepted_request_bytes = pipeline.accepted_request_bytes,
+                        .rejected_request_blocks_peer_choked = pipeline.rejected_request_blocks_peer_choked,
+                        .rejected_request_blocks_reqq_full = pipeline.rejected_request_blocks_reqq_full,
+                        .rejected_request_blocks_invalid = pipeline.rejected_request_blocks_invalid,
+                        .staged_piece_blocks = pipeline.staged_piece_blocks,
+                        .staged_piece_bytes = pipeline.staged_piece_bytes,
+                        .current_write_buffer = pipeline.current_write_buffer,
+                        .desired_write_buffer = pipeline.desired_write_buffer,
+                        .write_buffer_space = pipeline.write_buffer_space,
+                        .fill_stop_reason = pipeline.fill_stop_reason,
                         .request_blocks = n_requests,
                         .piece_bytes = piece_bytes,
                         .protocol_bytes = protocol_bytes,

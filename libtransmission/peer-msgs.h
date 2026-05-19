@@ -32,6 +32,31 @@ struct tr_address;
 class tr_peerMsgs : public tr_peer
 {
 public:
+    enum class UploadFillStopReason : uint8_t
+    {
+        None,
+        NoRequests,
+        BufferTargetReached,
+        PeerChoked,
+        InvalidRequest,
+        MissingPiece,
+    };
+
+    struct UploadPipelinePulseDiagnostics
+    {
+        uint64_t accepted_request_blocks = 0U;
+        uint64_t accepted_request_bytes = 0U;
+        uint64_t rejected_request_blocks_peer_choked = 0U;
+        uint64_t rejected_request_blocks_reqq_full = 0U;
+        uint64_t rejected_request_blocks_invalid = 0U;
+        uint64_t staged_piece_blocks = 0U;
+        uint64_t staged_piece_bytes = 0U;
+        size_t current_write_buffer = 0U;
+        size_t desired_write_buffer = 0U;
+        size_t write_buffer_space = 0U;
+        UploadFillStopReason fill_stop_reason = UploadFillStopReason::None;
+    };
+
     tr_peerMsgs(tr_torrent const* tor, peer_atom* atom_in)
         : tr_peer{ tor, atom_in }
         , have_{ tor->pieceCount() }
@@ -62,6 +87,8 @@ public:
     [[nodiscard]] virtual bool has_upload_bandwidth_left() const noexcept = 0;
     [[nodiscard]] virtual bool is_waiting_for_can_write() const noexcept = 0;
     [[nodiscard]] virtual tr_peerIo::WriteAttemptDiagnostics last_write_attempt_diagnostics() const noexcept = 0;
+    [[nodiscard]] virtual UploadPipelinePulseDiagnostics consume_upload_pipeline_diagnostics(
+        uint64_t now_msec) const noexcept = 0;
 
     [[nodiscard]] virtual std::pair<tr_address, tr_port> socketAddress() const = 0;
 

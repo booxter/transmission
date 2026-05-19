@@ -246,4 +246,101 @@ TEST_F(PeerMsgsTest, tracksPendingProtocolAndPieceOutputSeparately)
     tr_net_close_socket(peer_sock);
 }
 
+TEST_F(PeerMsgsTest, capturesUploadPipelinePulseDiagnostics)
+{
+    auto* const tor = zeroTorrentInit(ZeroTorrentState::Complete);
+    ASSERT_NE(nullptr, tor);
+
+    auto [io, peer_sock] = createIncomingIo(&tor->bandwidth());
+    ASSERT_NE(nullptr, io);
+
+    auto* peer = tr_peerMsgsNew(tor, nullptr, io, &noopPeerCallback, nullptr);
+    ASSERT_NE(nullptr, peer);
+
+    static auto constexpr Piece = tr_piece_index_t{ 0U };
+    static auto constexpr Offset = uint32_t{ 0U };
+    auto const length = static_cast<uint32_t>(tor->blockSize(tr_block_index_t{ 0U }));
+    auto const request = makeRequestMessage(Piece, Offset, length);
+
+    auto diagnostics = tr_peerMsgs::UploadPipelinePulseDiagnostics{};
+    auto cleared = tr_peerMsgs::UploadPipelinePulseDiagnostics{};
+
+    runInSessionThreadAndWait([&]() { peer->set_choke(false); });
+    ASSERT_TRUE(writeAll(peer_sock, request));
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            session_->bandwidthScheduler().on_can_read(*io);
+            diagnostics = peer->consume_upload_pipeline_diagnostics(tr_time_msec());
+            cleared = peer->consume_upload_pipeline_diagnostics(tr_time_msec());
+        });
+
+    EXPECT_EQ(1U, diagnostics.accepted_request_blocks);
+    EXPECT_EQ(length, diagnostics.accepted_request_bytes);
+    EXPECT_EQ(1U, diagnostics.staged_piece_blocks);
+    EXPECT_EQ(length, diagnostics.staged_piece_bytes);
+    EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::NoRequests, diagnostics.fill_stop_reason);
+    EXPECT_LE(diagnostics.current_write_buffer, diagnostics.desired_write_buffer);
+    EXPECT_EQ(diagnostics.desired_write_buffer - diagnostics.current_write_buffer, diagnostics.write_buffer_space);
+
+    EXPECT_EQ(0U, cleared.accepted_request_blocks);
+    EXPECT_EQ(0U, cleared.staged_piece_blocks);
+    EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::None, cleared.fill_stop_reason);
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            delete peer;
+            io.reset();
+        });
+    tr_net_close_socket(peer_sock);
+}
+
+TEST_F(PeerMsgsTest, recordsMissingPieceStopReasonWhenReadFails)
+{
+    auto* const tor = zeroTorrentInit(ZeroTorrentState::Complete);
+    ASSERT_NE(nullptr, tor);
+
+    auto [io, peer_sock] = createIncomingIo(&tor->bandwidth());
+    ASSERT_NE(nullptr, io);
+
+    auto* peer = tr_peerMsgsNew(tor, nullptr, io, &noopPeerCallback, nullptr);
+    ASSERT_NE(nullptr, peer);
+
+    static auto constexpr Piece = tr_piece_index_t{ 0U };
+    static auto constexpr Offset = uint32_t{ 0U };
+    auto const length = static_cast<uint32_t>(tor->blockSize(tr_block_index_t{ 0U }));
+    auto const request = makeRequestMessage(Piece, Offset, length);
+    auto const missing_file = tr_pathbuf{ tor->currentDir(), '/', tor->fileSubpath(tr_file_index_t{ 0U }) };
+
+    tr_sys_path_remove(missing_file);
+
+    auto diagnostics = tr_peerMsgs::UploadPipelinePulseDiagnostics{};
+
+    runInSessionThreadAndWait([&]() { peer->set_choke(false); });
+    ASSERT_TRUE(writeAll(peer_sock, request));
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            session_->bandwidthScheduler().on_can_read(*io);
+            diagnostics = peer->consume_upload_pipeline_diagnostics(tr_time_msec());
+        });
+
+    EXPECT_EQ(1U, diagnostics.accepted_request_blocks);
+    EXPECT_EQ(length, diagnostics.accepted_request_bytes);
+    EXPECT_EQ(0U, diagnostics.staged_piece_blocks);
+    EXPECT_EQ(0U, diagnostics.staged_piece_bytes);
+    EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::MissingPiece, diagnostics.fill_stop_reason);
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            delete peer;
+            io.reset();
+        });
+    tr_net_close_socket(peer_sock);
+}
+
 } // namespace libtransmission::test
