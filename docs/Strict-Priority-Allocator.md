@@ -496,45 +496,170 @@ This guarantees the desired shape:
 
 The purpose of the curves is not to create perfect prediction. The purpose is to reduce the chance that lower-priority work burns the limited pulse budget too early.
 
-### Preset Selection
+### Strategy Selection
 
-The curve family should be fixed to power curves in the first version, but the exponent pair should be selectable at runtime through a small set of named presets.
+The curve family should stay within power curves, but the release strategy should no longer be limited to a few hardcoded fixed presets.
 
-This keeps experimentation practical without introducing multiple unrelated curve families or requiring a rebuild to compare behaviors.
+The canonical configuration key should remain `bandwidth_strict_limited_curve`.
 
-The canonical configuration key should be `bandwidth_strict_limited_curve`.
-
-For the initial implementation, this setting should be:
+This setting should remain:
 
 - configuration-file only
 - restart-required
 - only meaningful when `bandwidth_allocator = strict`
 
-Required preset values:
+Required strategy values:
 
 - `relaxed`
 - `balanced`
 - `aggressive`
+- `dynamic`
 
-The initial exponent pairs should be:
+The fixed-strategy exponent pairs should remain:
 
 - `relaxed`: `p_nl = 1.5`, `p_low = 3`
 - `balanced`: `p_nl = 2`, `p_low = 4`
 - `aggressive`: `p_nl = 3`, `p_low = 6`
 
-The default preset should be `balanced`.
+The fixed presets remain useful as:
 
-Invalid preset names should log a warning and fall back to `balanced`.
+- simple operator choices
+- regression anchors for testing
+- bounds or landmarks for dynamic tuning
+
+The default should remain `balanced`.
+
+Invalid names should log a warning and fall back to `balanced`.
+
+### Dynamic Strategy
+
+The fixed presets are easy to reason about, but they are not adaptive:
+
+- if the curve is too mild, lower priorities consume budget earlier than necessary
+- if the curve is too aggressive, lower priorities may not have enough pulse time left to catch up and some limited budget is stranded
+
+The dynamic strategy should therefore remain a power-curve strategy, but one whose exponents are adjusted online from observed pulse outcomes.
+
+This is not a new curve family. It is a controller over the existing power-curve family.
+
+The objective should be:
+
+- tighten lower-priority release as far as possible
+- but relax again as soon as the current tightness causes the pulse budget to stop filling completely
+
+In other words, the dynamic strategy should try to operate just below the point where overtightening starts to strand budget.
+
+The dynamic strategy should be allowed to tighten beyond the current fixed `aggressive` preset if real pulse behavior supports it. The fixed presets should not be treated as mathematical limits, only as named anchor points.
+
+However, the dynamic strategy still needs bounded engineering limits so it does not become effectively undefined or degenerate. The correct boundary is not aesthetic smoothness. The correct boundary is operational:
+
+- if a very steep curve still lets lower priorities consume their released remainder by pulse end, it is acceptable
+- if the remaining lower budget can no longer be turned into bytes on the wire before the pulse closes, the curve is too steep
+
+The dynamic strategy should therefore treat late lower-priority catch-up as the key safety signal.
+
+### Dynamic Control Signals
+
+The dynamic strategy should make decisions over a short multi-pulse window rather than from a single pulse. With the current `500ms` pulse, a natural first window is `4` pulses (`2s`).
+
+Per pulse, the strategy should observe at least:
+
+- protected session pulse budget
+- `HIGH` piece bytes consumed
+- `NORMAL` piece bytes consumed
+- `LOW` piece bytes consumed
+- whether `HIGH` demand was present in that pulse
+- whether lower-priority demand was present in that pulse
+- whether lower-priority work was gated by the release policy during that pulse
+
+From those signals, the dynamic strategy should derive two high-level outcomes:
+
+- tighten is safe
+  - `HIGH` had real demand
+  - total protected budget was still fully or nearly fully consumed
+  - lower priorities still managed to catch up by pulse end
+- relax is required
+  - lower-priority demand existed
+  - some limited budget was left unused by pulse end
+  - and lower priorities had been gated earlier in the pulse, so the underfill is attributable to curve tightness rather than complete lack of lower demand
+
+The hold case is everything in between:
+
+- no clear sign that more aggression is needed
+- no clear sign that the current aggression stranded budget
+
+This controller should be deliberately asymmetric in confidence even if it is symmetric in step size:
+
+- tightening should require repeated successful windows
+- relaxing should require fewer confirming windows once real lower-budget slip is observed
+
+The exact thresholds can be tuned later, but the design should be based on:
+
+- windowed classification
+- hysteresis
+- adjustment by small steps
+
+### Policy Abstraction
+
+The current retained implementation does not yet have a pluggable admission seam.
+
+Today, the strict scheduler itself owns all lower-priority release behavior:
+
+- exponent lookup lives in `strict_curve_parameters()`
+- power-curve math lives in `released_bytes()`
+- admission decisions live in `retained_piece_limit()`
+- next eligibility wakeups live in `next_retained_wakeup_msec()`
+- lower-priority accounting lives in `charge_retained_piece_bytes()`
+
+That means adding a new curve or admission strategy currently requires editing the allocator itself. This is exactly the coupling that the next iteration should remove.
+
+The strict scheduler should instead delegate per-priority admission to a policy object through a narrow interface.
+
+The scheduler should not decide whether a given piece transfer is "inside the curve". It should ask the active policy.
+
+In the fixed power-curve implementation, `HIGH` will usually be admitted immediately. However, the API should still ask the policy about `HIGH` too rather than hardcoding that assumption in the allocator. This keeps the seam general enough for future strategies that may want to reason about every priority explicitly.
+
+The interface should be shaped around what the scheduler already knows naturally:
+
+- pulse start
+- pulse duration
+- protected pulse budget
+- current time inside the pulse
+- peer direction and priority
+- pulse-local lower-priority consumption so far
+- exact piece bytes consumed by the most recent flush
+
+The first useful shape is:
+
+- `on_pulse_start(...)`
+- `admit(...) -> { piece_limit, next_wakeup_msec }`
+- `charge(...)`
+- `on_pulse_finish(...)`
+
+Where:
+
+- `admit(...)` answers whether piece work for the queried priority is eligible now, how many piece bytes may be consumed now, and when the next useful wakeup would be if it is gated
+- `charge(...)` records exact piece-byte consumption after a successful read or write flush for the queried priority
+- `on_pulse_finish(...)` receives a pulse summary for dynamic adaptation
+
+With that seam in place:
+
+- the existing fixed power-curve implementation becomes one policy module
+- the new dynamic power-curve implementation becomes a second policy module
+- future curve or admission modules can be added by extending the factory rather than changing allocator logic
+
+This is the right decoupling line. The allocator remains responsible for queueing, draining, timers, and byte execution. The admission policy becomes responsible only for per-priority eligibility and pulse-to-pulse adaptation.
 
 ### Implementation Sketch
 
-At a high level, the strict scheduler would need additional pulse-local state for limited-mode retention:
+At a high level, the strict scheduler still needs pulse-local state for limited-mode retention:
 
 - pulse start time
 - pulse duration
 - per-direction pulse budget for the session-level limited cap being protected
 - per-direction cumulative lower-priority consumption for the current pulse
 - the next time at which a currently gated lower-priority queue may become eligible
+- per-pulse outcome data needed by a dynamic policy
 
 Eligibility decisions would then change from "is anything queued in this class?" to:
 
@@ -563,6 +688,57 @@ In practice, the scheduler should compute the earliest useful wakeup and arm the
 - no queued work remains: do not arm the timer
 
 If newly arrived higher-priority work makes immediate progress possible before a delayed wakeup fires, the scheduler should stop and re-arm the same timer for immediate draining.
+
+For the next iteration, the scheduler should stop embedding the curve behavior directly and instead route these decisions through the admission-policy seam above. That refactor is a prerequisite for `dynamic`.
+
+### Code Findings
+
+On the retained branch, the code already has most of the raw signals needed by the new policy abstraction:
+
+- the scheduler already knows exact `piece_bytes` for read and write flushes through `flush_with_result()`
+- lower-priority accounting is already pulse-local
+- the scheduler already computes the next lower-priority wakeup and already owns the only timer needed to honor it
+
+What it does not yet have is the abstraction boundary:
+
+- there is no existing callback or virtual hook for lower-priority curve admission
+- the strict scheduler computes and enforces the curve directly
+
+So the next implementation should be a refactor, not a feature bolt-on:
+
+1. lift the current fixed power-curve behavior behind a policy interface with no behavioral change
+2. add pulse summary plumbing and tests for policy inputs/outputs
+3. add `dynamic` as another policy implementation behind the same config key
+4. keep the allocator unchanged once the policy seam exists
+
+### Implementation Plan
+
+The next code series should be split into logical steps:
+
+1. `docs: design dynamic strict curve strategy`
+   - design-note update only
+
+2. `bandwidth: factor lower-priority admission policy seam`
+   - introduce the policy interface
+   - move existing fixed power-curve logic behind it
+   - no intended behavior change
+
+3. `bandwidth: report pulse outcomes to admission policy`
+   - add pulse-local summary accounting needed for dynamic adaptation
+   - cover exact signals in tests
+
+4. `settings: add dynamic strict limited curve option`
+   - extend parsing/serialization
+   - keep fixed presets as they are
+
+5. `bandwidth: add dynamic power-curve admission policy`
+   - implement windowed tighten/hold/relax behavior
+   - preserve wakeup and charge semantics through the existing policy seam
+
+6. `tests: cover dynamic curve adaptation`
+   - tighten when `HIGH` pressure is real and lower catch-up is still complete
+   - hold when the current curve is adequate
+   - relax when overtightening strands lower budget
 
 ### Interaction With Current Accounting
 
