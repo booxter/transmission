@@ -62,8 +62,8 @@ private:
     struct LimitedRetentionState
     {
         size_t pulse_budget = 0U;
+        size_t high_piece = 0U;
         size_t normal_low_piece = 0U;
-        size_t low_piece = 0U;
     };
 
 public:
@@ -93,43 +93,36 @@ public:
         auto const params = parameters(query.dir);
         auto const& retention = retention_[direction_index(query.dir)];
         auto const normal_low_allowed = released_bytes(query.dir, params.normal_low_exponent, query.now_msec);
-        auto const normal_low_remaining = normal_low_allowed > retention.normal_low_piece ?
-            normal_low_allowed - retention.normal_low_piece :
-            0U;
-        auto const normal_low_target = next_retention_target(retention.normal_low_piece, retention.pulse_budget);
-        auto const normal_low_release_increment = normal_low_target - retention.normal_low_piece;
+        auto const shared_consumed = retained_lower_consumed(retention);
+        auto const normal_low_remaining = normal_low_allowed > shared_consumed ? normal_low_allowed - shared_consumed : 0U;
+        auto const normal_low_target = next_retention_target(shared_consumed, retention.pulse_budget);
+        auto const normal_low_release_increment = normal_low_target - shared_consumed;
 
         if (query.priority == TR_PRI_NORMAL)
         {
             if (normal_low_remaining < normal_low_release_increment && query.now_msec < pulse_deadline_msec_)
             {
-                return { 0U,
-                         next_release_msec(
-                             retention.normal_low_piece,
-                             retention.pulse_budget,
-                             params.normal_low_exponent,
-                             query.now_msec) };
+                return {
+                    0U,
+                    next_release_msec(shared_consumed, retention.pulse_budget, params.normal_low_exponent, query.now_msec)
+                };
             }
 
             return { std::min(execution_increment_, normal_low_remaining), 0U };
         }
 
         auto const low_allowed = released_bytes(query.dir, params.low_exponent, query.now_msec);
-        auto const low_remaining = low_allowed > retention.low_piece ? low_allowed - retention.low_piece : 0U;
-        auto const low_target = next_retention_target(retention.low_piece, retention.pulse_budget);
-        auto const low_release_increment = low_target - retention.low_piece;
+        auto const low_remaining = low_allowed > shared_consumed ? low_allowed - shared_consumed : 0U;
+        auto const low_target = next_retention_target(shared_consumed, retention.pulse_budget);
+        auto const low_release_increment = low_target - shared_consumed;
 
         if ((normal_low_remaining < normal_low_release_increment || low_remaining < low_release_increment) &&
             query.now_msec < pulse_deadline_msec_)
         {
             return { 0U,
                      std::max(
-                         next_release_msec(
-                             retention.normal_low_piece,
-                             retention.pulse_budget,
-                             params.normal_low_exponent,
-                             query.now_msec),
-                         next_release_msec(retention.low_piece, retention.pulse_budget, params.low_exponent, query.now_msec)) };
+                         next_release_msec(shared_consumed, retention.pulse_budget, params.normal_low_exponent, query.now_msec),
+                         next_release_msec(shared_consumed, retention.pulse_budget, params.low_exponent, query.now_msec)) };
         }
 
         return { std::min(execution_increment_, std::min(normal_low_remaining, low_remaining)), 0U };
@@ -137,16 +130,19 @@ public:
 
     void charge(tr_strict_bandwidth_curve_charge const& charge_info) override
     {
-        if (charge_info.piece_bytes == 0U || charge_info.priority == TR_PRI_HIGH || !charge_info.applies)
+        if (charge_info.piece_bytes == 0U || !charge_info.applies)
         {
             return;
         }
 
         auto& retention = retention_[direction_index(charge_info.dir)];
-        retention.normal_low_piece = std::min(retention.pulse_budget, retention.normal_low_piece + charge_info.piece_bytes);
-        if (charge_info.priority == TR_PRI_LOW)
+        if (charge_info.priority == TR_PRI_HIGH)
         {
-            retention.low_piece = std::min(retention.pulse_budget, retention.low_piece + charge_info.piece_bytes);
+            retention.high_piece = std::min(retention.pulse_budget, retention.high_piece + charge_info.piece_bytes);
+        }
+        else
+        {
+            retention.normal_low_piece = std::min(retention.pulse_budget, retention.normal_low_piece + charge_info.piece_bytes);
         }
     }
 
@@ -159,6 +155,11 @@ protected:
     }
 
 private:
+    [[nodiscard]] static size_t retained_lower_consumed(LimitedRetentionState const& retention) noexcept
+    {
+        return std::min(retention.pulse_budget, retention.high_piece + retention.normal_low_piece);
+    }
+
     [[nodiscard]] size_t next_retention_target(size_t consumed_piece, size_t pulse_budget) const noexcept
     {
         if (consumed_piece >= pulse_budget)

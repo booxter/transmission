@@ -496,6 +496,8 @@ This guarantees the desired shape:
 
 The purpose of the curves is not to create perfect prediction. The purpose is to reduce the chance that lower-priority work burns the limited pulse budget too early.
 
+Higher-priority piece consumption should always count against lower-priority release headroom. In other words, the retained lower envelopes should be higher-aware by default: if `HIGH` spends piece budget early in the pulse, that same pulse has less lower-priority release left to expose later. The old lower-only accounting mode is intentionally not retained in the current design.
+
 ### Strategy Selection
 
 The curve family should stay within power curves, but the release strategy should no longer be limited to a few hardcoded fixed presets.
