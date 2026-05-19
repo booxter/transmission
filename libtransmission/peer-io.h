@@ -154,6 +154,7 @@ public:
 
     [[nodiscard]] bool has_pending_protocol_output() const noexcept;
     [[nodiscard]] size_t pending_protocol_output_size() const noexcept;
+    [[nodiscard]] size_t pending_piece_output_size() const noexcept;
 
     // Write all the data from `buf`.
     // This is a destructive add: `buf` is empty after this call.

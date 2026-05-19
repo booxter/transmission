@@ -204,4 +204,46 @@ TEST_F(PeerMsgsTest, respondsImmediatelyToPeerRequestWithoutWaitingForPulse)
     tr_net_close_socket(peer_sock);
 }
 
+TEST_F(PeerMsgsTest, tracksPendingProtocolAndPieceOutputSeparately)
+{
+    auto* const tor = zeroTorrentInit(ZeroTorrentState::Complete);
+    ASSERT_NE(nullptr, tor);
+
+    auto [io, peer_sock] = createIncomingIo(&tor->bandwidth());
+    ASSERT_NE(nullptr, io);
+
+    auto* peer = tr_peerMsgsNew(tor, nullptr, io, &noopPeerCallback, nullptr);
+    ASSERT_NE(nullptr, peer);
+
+    auto const protocol_payload = "ab"sv;
+    auto const piece_payload = "cde"sv;
+
+    auto base_protocol_bytes = size_t{};
+    auto base_piece_bytes = size_t{};
+    auto pending_protocol_bytes = size_t{};
+    auto pending_piece_bytes = size_t{};
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            io->set_defer_immediate_outbuf_ready(true);
+            base_protocol_bytes = peer->pending_protocol_output_size();
+            base_piece_bytes = peer->pending_piece_output_size();
+            io->write_bytes(std::data(protocol_payload), std::size(protocol_payload), false);
+            io->write_bytes(std::data(piece_payload), std::size(piece_payload), true);
+            pending_protocol_bytes = peer->pending_protocol_output_size();
+            pending_piece_bytes = peer->pending_piece_output_size();
+        });
+
+    EXPECT_EQ(base_protocol_bytes + std::size(protocol_payload), pending_protocol_bytes);
+    EXPECT_EQ(base_piece_bytes + std::size(piece_payload), pending_piece_bytes);
+
+    runInSessionThreadAndWait(
+        [&]()
+        {
+            delete peer;
+            io.reset();
+        });
+    tr_net_close_socket(peer_sock);
+}
+
 } // namespace libtransmission::test

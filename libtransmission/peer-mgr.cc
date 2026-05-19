@@ -2187,6 +2187,167 @@ namespace
 namespace bandwidth_helpers
 {
 
+[[nodiscard]] constexpr auto priority_index(tr_priority_t priority) noexcept
+{
+    switch (priority)
+    {
+    case TR_PRI_HIGH:
+        return size_t{ 0U };
+
+    case TR_PRI_NORMAL:
+        return size_t{ 1U };
+
+    case TR_PRI_LOW:
+        return size_t{ 2U };
+    }
+
+    return size_t{ 1U };
+}
+
+struct PriorityTotals
+{
+    void add(tr_priority_t priority, uint64_t n = 1U) noexcept
+    {
+        values[priority_index(priority)] += n;
+    }
+
+    [[nodiscard]] auto format() const
+    {
+        return fmt::format("[{},{},{}]", values[0], values[1], values[2]);
+    }
+
+    std::array<uint64_t, 3> values = {};
+};
+
+struct UploadSourceDiagnostics
+{
+    PriorityTotals swarms_with_peers;
+    PriorityTotals swarms_with_demand;
+    PriorityTotals swarms_maxed;
+    PriorityTotals peers_connected;
+    PriorityTotals peers_eligible;
+    PriorityTotals peers_sending;
+    PriorityTotals peers_with_requests;
+    PriorityTotals request_blocks;
+    PriorityTotals peers_with_piece_output;
+    PriorityTotals piece_output_bytes;
+    PriorityTotals peers_with_protocol_output;
+    PriorityTotals protocol_output_bytes;
+    PriorityTotals upload_rate_bps;
+};
+
+[[nodiscard]] bool swarm_has_upload_demand(tr_swarm const* swarm, uint64_t now_msec)
+{
+    auto const* const tor = swarm->tor;
+    if (!tor->isRunning || !tor->clientCanUpload() || tor->bandwidth_.is_maxed_out(TR_UP, now_msec))
+    {
+        return false;
+    }
+
+    for (auto const* peer : swarm->peers)
+    {
+        if (!peer->isSeed() && peer->is_peer_interested())
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t now_msec)
+{
+    auto const* const session = mgr->session;
+    if (!session->strictBandwidthDiagnosticsEnabled() || session->bandwidthAllocator() != tr_bandwidth_allocator_mode::Strict)
+    {
+        return;
+    }
+
+    auto diagnostics = UploadSourceDiagnostics{};
+
+    for (auto* const tor : session->torrents())
+    {
+        auto const* const swarm = tor->swarm;
+        if (swarm == nullptr)
+        {
+            continue;
+        }
+
+        auto const priority = tor->getPriority();
+        if (swarm->peerCount() != 0U)
+        {
+            diagnostics.swarms_with_peers.add(priority);
+        }
+
+        if (tor->bandwidth_.is_maxed_out(TR_UP, now_msec))
+        {
+            diagnostics.swarms_maxed.add(priority);
+        }
+
+        if (swarm_has_upload_demand(swarm, now_msec))
+        {
+            diagnostics.swarms_with_demand.add(priority);
+        }
+
+        for (auto const* peer : swarm->peers)
+        {
+            diagnostics.peers_connected.add(priority);
+
+            if (!peer->isSeed() && peer->is_peer_interested() && !peer->is_peer_choked())
+            {
+                diagnostics.peers_eligible.add(priority);
+            }
+
+            auto const upload_rate_bps = peer->get_piece_speed_bytes_per_second(now_msec, TR_CLIENT_TO_PEER);
+            diagnostics.upload_rate_bps.add(priority, upload_rate_bps);
+            if (upload_rate_bps != 0U)
+            {
+                diagnostics.peers_sending.add(priority);
+            }
+
+            if (auto const n_requests = peer->activeReqCount(TR_PEER_TO_CLIENT); n_requests != 0U)
+            {
+                diagnostics.peers_with_requests.add(priority);
+                diagnostics.request_blocks.add(priority, n_requests);
+            }
+
+            if (auto const piece_bytes = peer->pending_piece_output_size(); piece_bytes != 0U)
+            {
+                diagnostics.peers_with_piece_output.add(priority);
+                diagnostics.piece_output_bytes.add(priority, piece_bytes);
+            }
+
+            if (auto const protocol_bytes = peer->pending_protocol_output_size(); protocol_bytes != 0U)
+            {
+                diagnostics.peers_with_protocol_output.add(priority);
+                diagnostics.protocol_output_bytes.add(priority, protocol_bytes);
+            }
+        }
+    }
+
+    tr_logAddInfo(
+        fmt::format(
+            "strict-upload-source "
+            "swarms={{peers:{} demand:{} maxed:{}}} "
+            "peers={{connected:{} eligible:{} sending:{}}} "
+            "work={{req_peers:{} req_blocks:{} piece_peers:{} piece_bytes:{} proto_peers:{} proto_bytes:{}}} "
+            "rate_bps={}",
+            diagnostics.swarms_with_peers.format(),
+            diagnostics.swarms_with_demand.format(),
+            diagnostics.swarms_maxed.format(),
+            diagnostics.peers_connected.format(),
+            diagnostics.peers_eligible.format(),
+            diagnostics.peers_sending.format(),
+            diagnostics.peers_with_requests.format(),
+            diagnostics.request_blocks.format(),
+            diagnostics.peers_with_piece_output.format(),
+            diagnostics.piece_output_bytes.format(),
+            diagnostics.peers_with_protocol_output.format(),
+            diagnostics.protocol_output_bytes.format(),
+            diagnostics.upload_rate_bps.format()),
+        "peer-mgr");
+}
+
 void pumpAllPeers(tr_peerMgr* mgr)
 {
     for (auto* const tor : mgr->session->torrents())
@@ -2226,6 +2387,7 @@ void tr_peerMgr::bandwidthPulse()
     auto const lock = unique_lock();
 
     pumpAllPeers(this);
+    maybe_log_strict_upload_source_diagnostics(this, tr_time_msec());
 
     // allocate bandwidth to the peers
     static auto constexpr Msec = std::chrono::duration_cast<std::chrono::milliseconds>(BandwidthPeriod).count();

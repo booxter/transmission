@@ -646,6 +646,21 @@ size_t tr_peerIo::pending_protocol_output_size() const noexcept
     return byte_count;
 }
 
+size_t tr_peerIo::pending_piece_output_size() const noexcept
+{
+    auto byte_count = size_t{ 0U };
+
+    for (auto const& [n_bytes, is_piece_data] : outbuf_info_)
+    {
+        if (is_piece_data)
+        {
+            byte_count += n_bytes;
+        }
+    }
+
+    return byte_count;
+}
+
 void tr_peerIo::flush_outbuf_soon()
 {
     if (!defer_immediate_outbuf_ready_)

@@ -446,6 +446,16 @@ public:
         set_active(direction, calculate_active(direction));
     }
 
+    [[nodiscard]] size_t pending_protocol_output_size() const noexcept override
+    {
+        return io->pending_protocol_output_size();
+    }
+
+    [[nodiscard]] size_t pending_piece_output_size() const noexcept override
+    {
+        return io->pending_piece_output_size();
+    }
+
     [[nodiscard]] std::pair<tr_address, tr_port> socketAddress() const override
     {
         return io->socket_address();
