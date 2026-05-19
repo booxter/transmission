@@ -47,6 +47,7 @@ enum class tr_strict_bandwidth_curve : uint8_t
     Relaxed,
     Balanced,
     Aggressive,
+    Dynamic,
 };
 
 /**

@@ -12,14 +12,38 @@ using namespace std::literals;
 namespace libtransmission::test
 {
 
-TEST(StrictBandwidthCurvePolicyTest, highPriorityIsAdmittedImmediately)
+namespace
 {
-    auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
 
+auto make_pulse()
+{
     auto pulse = tr_strict_bandwidth_curve_pulse{};
     pulse.start_msec = 1000U;
     pulse.duration_msec = 500U;
     pulse.up_budget = 6000U;
+    return pulse;
+}
+
+void feed_pulse_outcome(
+    tr_strict_bandwidth_curve_policy& policy,
+    tr_strict_bandwidth_curve_pulse_outcome const& outcome,
+    size_t n_pulses)
+{
+    auto const pulse = make_pulse();
+    for (size_t i = 0U; i < n_pulses; ++i)
+    {
+        policy.on_pulse_start(pulse);
+        policy.on_pulse_finish(outcome);
+    }
+}
+
+} // namespace
+
+TEST(StrictBandwidthCurvePolicyTest, highPriorityIsAdmittedImmediately)
+{
+    auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
+
+    auto pulse = make_pulse();
     policy->on_pulse_start(pulse);
 
     auto query = tr_strict_bandwidth_curve_query{};
@@ -37,10 +61,7 @@ TEST(StrictBandwidthCurvePolicyTest, normalPriorityIsGatedEarlyInPulse)
 {
     auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
 
-    auto pulse = tr_strict_bandwidth_curve_pulse{};
-    pulse.start_msec = 1000U;
-    pulse.duration_msec = 500U;
-    pulse.up_budget = 6000U;
+    auto pulse = make_pulse();
     policy->on_pulse_start(pulse);
 
     auto query = tr_strict_bandwidth_curve_query{};
@@ -59,10 +80,7 @@ TEST(StrictBandwidthCurvePolicyTest, lowPriorityIsReleasedMoreSlowlyThanNormal)
 {
     auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
 
-    auto pulse = tr_strict_bandwidth_curve_pulse{};
-    pulse.start_msec = 1000U;
-    pulse.duration_msec = 500U;
-    pulse.up_budget = 6000U;
+    auto pulse = make_pulse();
     policy->on_pulse_start(pulse);
 
     auto charge = tr_strict_bandwidth_curve_charge{};
@@ -95,10 +113,7 @@ TEST(StrictBandwidthCurvePolicyTest, lowChargeAdvancesBothEnvelopes)
 {
     auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
 
-    auto pulse = tr_strict_bandwidth_curve_pulse{};
-    pulse.start_msec = 1000U;
-    pulse.duration_msec = 500U;
-    pulse.up_budget = 6000U;
+    auto pulse = make_pulse();
     policy->on_pulse_start(pulse);
 
     auto charge = tr_strict_bandwidth_curve_charge{};
@@ -123,10 +138,7 @@ TEST(StrictBandwidthCurvePolicyTest, NonApplyingWorkIsNeverCurveGated)
 {
     auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Aggressive, 3000U, 1024U);
 
-    auto pulse = tr_strict_bandwidth_curve_pulse{};
-    pulse.start_msec = 1000U;
-    pulse.duration_msec = 500U;
-    pulse.up_budget = 6000U;
+    auto pulse = make_pulse();
     policy->on_pulse_start(pulse);
 
     auto query = tr_strict_bandwidth_curve_query{};
@@ -138,6 +150,115 @@ TEST(StrictBandwidthCurvePolicyTest, NonApplyingWorkIsNeverCurveGated)
 
     EXPECT_EQ(3000U, result.piece_limit);
     EXPECT_EQ(0U, result.next_wakeup_msec);
+}
+
+TEST(StrictBandwidthCurvePolicyTest, dynamicStartsFromBalancedCurve)
+{
+    auto dynamic = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Dynamic, 3000U, 1024U);
+    auto balanced = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
+
+    auto const pulse = make_pulse();
+    dynamic->on_pulse_start(pulse);
+    balanced->on_pulse_start(pulse);
+
+    auto query = tr_strict_bandwidth_curve_query{};
+    query.dir = TR_UP;
+    query.priority = TR_PRI_NORMAL;
+    query.now_msec = 1000U;
+    query.applies = true;
+
+    auto const dynamic_result = dynamic->admit(query);
+    auto const balanced_result = balanced->admit(query);
+
+    EXPECT_EQ(balanced_result.piece_limit, dynamic_result.piece_limit);
+    EXPECT_EQ(balanced_result.next_wakeup_msec, dynamic_result.next_wakeup_msec);
+}
+
+TEST(StrictBandwidthCurvePolicyTest, dynamicTightensAfterSustainedHighPressure)
+{
+    auto dynamic = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Dynamic, 3000U, 1024U);
+    auto balanced = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
+
+    auto outcome = tr_strict_bandwidth_curve_pulse_outcome{};
+    outcome.note_piece_bytes(TR_UP, TR_PRI_HIGH, 5000U);
+    outcome.note_piece_bytes(TR_UP, TR_PRI_NORMAL, 1000U);
+    outcome.note_pending(TR_UP, TR_PRI_HIGH);
+    feed_pulse_outcome(*dynamic, outcome, 4U);
+
+    auto const pulse = make_pulse();
+    dynamic->on_pulse_start(pulse);
+    balanced->on_pulse_start(pulse);
+
+    auto query = tr_strict_bandwidth_curve_query{};
+    query.dir = TR_UP;
+    query.priority = TR_PRI_NORMAL;
+    query.now_msec = 1000U;
+    query.applies = true;
+
+    auto const dynamic_result = dynamic->admit(query);
+    auto const balanced_result = balanced->admit(query);
+
+    EXPECT_EQ(0U, dynamic_result.piece_limit);
+    EXPECT_EQ(0U, balanced_result.piece_limit);
+    EXPECT_GT(dynamic_result.next_wakeup_msec, balanced_result.next_wakeup_msec);
+}
+
+TEST(StrictBandwidthCurvePolicyTest, dynamicRelaxesAfterRepeatedUnderfillWithLowerDemand)
+{
+    auto dynamic = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Dynamic, 3000U, 1024U);
+    auto balanced = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
+
+    auto outcome = tr_strict_bandwidth_curve_pulse_outcome{};
+    outcome.note_piece_bytes(TR_UP, TR_PRI_HIGH, 1000U);
+    outcome.note_piece_bytes(TR_UP, TR_PRI_NORMAL, 1000U);
+    outcome.note_pending(TR_UP, TR_PRI_NORMAL);
+    feed_pulse_outcome(*dynamic, outcome, 8U);
+
+    auto const pulse = make_pulse();
+    dynamic->on_pulse_start(pulse);
+    balanced->on_pulse_start(pulse);
+
+    auto query = tr_strict_bandwidth_curve_query{};
+    query.dir = TR_UP;
+    query.priority = TR_PRI_NORMAL;
+    query.now_msec = 1000U;
+    query.applies = true;
+
+    auto const dynamic_result = dynamic->admit(query);
+    auto const balanced_result = balanced->admit(query);
+
+    EXPECT_EQ(0U, dynamic_result.piece_limit);
+    EXPECT_EQ(0U, balanced_result.piece_limit);
+    EXPECT_LT(dynamic_result.next_wakeup_msec, balanced_result.next_wakeup_msec);
+}
+
+TEST(StrictBandwidthCurvePolicyTest, dynamicCanTightenBeyondAggressive)
+{
+    auto dynamic = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Dynamic, 3000U, 1024U);
+    auto aggressive = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Aggressive, 3000U, 1024U);
+
+    auto outcome = tr_strict_bandwidth_curve_pulse_outcome{};
+    outcome.note_piece_bytes(TR_UP, TR_PRI_HIGH, 5000U);
+    outcome.note_piece_bytes(TR_UP, TR_PRI_NORMAL, 1000U);
+    outcome.note_pending(TR_UP, TR_PRI_HIGH);
+    feed_pulse_outcome(*dynamic, outcome, 20U);
+
+    auto const pulse = make_pulse();
+    dynamic->on_pulse_start(pulse);
+    aggressive->on_pulse_start(pulse);
+
+    auto query = tr_strict_bandwidth_curve_query{};
+    query.dir = TR_UP;
+    query.priority = TR_PRI_NORMAL;
+    query.now_msec = 1000U;
+    query.applies = true;
+
+    auto const dynamic_result = dynamic->admit(query);
+    auto const aggressive_result = aggressive->admit(query);
+
+    EXPECT_EQ(0U, dynamic_result.piece_limit);
+    EXPECT_EQ(0U, aggressive_result.piece_limit);
+    EXPECT_GT(dynamic_result.next_wakeup_msec, aggressive_result.next_wakeup_msec);
 }
 
 TEST(StrictBandwidthCurvePolicyTest, pulseOutcomeTracksPieceBytesByDirectionAndPriority)

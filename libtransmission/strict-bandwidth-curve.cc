@@ -24,23 +24,39 @@ struct StrictCurveParameters
     double low_exponent;
 };
 
-[[nodiscard]] constexpr auto strict_curve_parameters(tr_strict_bandwidth_curve curve) noexcept
+[[nodiscard]] constexpr auto relaxed_curve_parameters() noexcept
+{
+    return StrictCurveParameters{ 1.5, 3.0 };
+}
+
+[[nodiscard]] constexpr auto balanced_curve_parameters() noexcept
+{
+    return StrictCurveParameters{ 2.0, 4.0 };
+}
+
+[[nodiscard]] constexpr auto aggressive_curve_parameters() noexcept
+{
+    return StrictCurveParameters{ 3.0, 6.0 };
+}
+
+[[nodiscard]] constexpr auto preset_curve_parameters(tr_strict_bandwidth_curve curve) noexcept
 {
     switch (curve)
     {
     case tr_strict_bandwidth_curve::Relaxed:
-        return StrictCurveParameters{ 1.5, 3.0 };
+        return relaxed_curve_parameters();
 
     case tr_strict_bandwidth_curve::Aggressive:
-        return StrictCurveParameters{ 3.0, 6.0 };
+        return aggressive_curve_parameters();
 
     case tr_strict_bandwidth_curve::Balanced:
+    case tr_strict_bandwidth_curve::Dynamic:
     default:
-        return StrictCurveParameters{ 2.0, 4.0 };
+        return balanced_curve_parameters();
     }
 }
 
-class tr_fixed_strict_bandwidth_curve_policy final : public tr_strict_bandwidth_curve_policy
+class tr_power_strict_bandwidth_curve_policy : public tr_strict_bandwidth_curve_policy
 {
 private:
     struct LimitedRetentionState
@@ -51,12 +67,8 @@ private:
     };
 
 public:
-    explicit tr_fixed_strict_bandwidth_curve_policy(
-        tr_strict_bandwidth_curve curve,
-        size_t execution_increment,
-        size_t release_quantum)
-        : params_{ strict_curve_parameters(curve) }
-        , execution_increment_{ execution_increment }
+    explicit tr_power_strict_bandwidth_curve_policy(size_t execution_increment, size_t release_quantum)
+        : execution_increment_{ execution_increment }
         , release_quantum_{ release_quantum }
     {
     }
@@ -78,8 +90,9 @@ public:
             return { execution_increment_, 0U };
         }
 
+        auto const params = parameters(query.dir);
         auto const& retention = retention_[direction_index(query.dir)];
-        auto const normal_low_allowed = released_bytes(query.dir, params_.normal_low_exponent, query.now_msec);
+        auto const normal_low_allowed = released_bytes(query.dir, params.normal_low_exponent, query.now_msec);
         auto const normal_low_remaining = normal_low_allowed > retention.normal_low_piece ?
             normal_low_allowed - retention.normal_low_piece :
             0U;
@@ -94,14 +107,14 @@ public:
                          next_release_msec(
                              retention.normal_low_piece,
                              retention.pulse_budget,
-                             params_.normal_low_exponent,
+                             params.normal_low_exponent,
                              query.now_msec) };
             }
 
             return { std::min(execution_increment_, normal_low_remaining), 0U };
         }
 
-        auto const low_allowed = released_bytes(query.dir, params_.low_exponent, query.now_msec);
+        auto const low_allowed = released_bytes(query.dir, params.low_exponent, query.now_msec);
         auto const low_remaining = low_allowed > retention.low_piece ? low_allowed - retention.low_piece : 0U;
         auto const low_target = next_retention_target(retention.low_piece, retention.pulse_budget);
         auto const low_release_increment = low_target - retention.low_piece;
@@ -109,16 +122,14 @@ public:
         if ((normal_low_remaining < normal_low_release_increment || low_remaining < low_release_increment) &&
             query.now_msec < pulse_deadline_msec_)
         {
-            return {
-                0U,
-                std::max(
-                    next_release_msec(
-                        retention.normal_low_piece,
-                        retention.pulse_budget,
-                        params_.normal_low_exponent,
-                        query.now_msec),
-                    next_release_msec(retention.low_piece, retention.pulse_budget, params_.low_exponent, query.now_msec))
-            };
+            return { 0U,
+                     std::max(
+                         next_release_msec(
+                             retention.normal_low_piece,
+                             retention.pulse_budget,
+                             params.normal_low_exponent,
+                             query.now_msec),
+                         next_release_msec(retention.low_piece, retention.pulse_budget, params.low_exponent, query.now_msec)) };
         }
 
         return { std::min(execution_increment_, std::min(normal_low_remaining, low_remaining)), 0U };
@@ -139,8 +150,12 @@ public:
         }
     }
 
-    void on_pulse_finish(tr_strict_bandwidth_curve_pulse_outcome const&) override
+protected:
+    [[nodiscard]] virtual StrictCurveParameters parameters(tr_direction dir) const noexcept = 0;
+
+    [[nodiscard]] auto pulse_budget(tr_direction dir) const noexcept
     {
+        return retention_[direction_index(dir)].pulse_budget;
     }
 
 private:
@@ -206,13 +221,147 @@ private:
     }
 
 private:
-    StrictCurveParameters params_;
     size_t execution_increment_;
     size_t release_quantum_;
     uint64_t pulse_start_msec_ = 0U;
     uint64_t pulse_duration_msec_ = 0U;
     uint64_t pulse_deadline_msec_ = 0U;
     std::array<LimitedRetentionState, 2> retention_ = {};
+};
+
+class tr_fixed_strict_bandwidth_curve_policy final : public tr_power_strict_bandwidth_curve_policy
+{
+public:
+    explicit tr_fixed_strict_bandwidth_curve_policy(
+        StrictCurveParameters params,
+        size_t execution_increment,
+        size_t release_quantum)
+        : tr_power_strict_bandwidth_curve_policy{ execution_increment, release_quantum }
+        , params_{ params }
+    {
+    }
+
+    void on_pulse_finish(tr_strict_bandwidth_curve_pulse_outcome const&) override
+    {
+    }
+
+protected:
+    [[nodiscard]] StrictCurveParameters parameters(tr_direction) const noexcept override
+    {
+        return params_;
+    }
+
+private:
+    StrictCurveParameters params_;
+};
+
+class tr_dynamic_strict_bandwidth_curve_policy final : public tr_power_strict_bandwidth_curve_policy
+{
+private:
+    struct DynamicDirectionState
+    {
+        StrictCurveParameters params = balanced_curve_parameters();
+        size_t window_pulses = 0U;
+        size_t fully_utilized_pulses = 0U;
+        size_t high_pressure_pulses = 0U;
+        size_t underfilled_lower_demand_pulses = 0U;
+    };
+
+    static auto constexpr DynamicWindowPulses = size_t{ 4U };
+    static constexpr auto DynamicStep = StrictCurveParameters{ 0.25, 0.5 };
+    static constexpr auto DynamicMax = StrictCurveParameters{ 8.0, 16.0 };
+
+public:
+    explicit tr_dynamic_strict_bandwidth_curve_policy(size_t execution_increment, size_t release_quantum)
+        : tr_power_strict_bandwidth_curve_policy{ execution_increment, release_quantum }
+    {
+    }
+
+    void on_pulse_finish(tr_strict_bandwidth_curve_pulse_outcome const& outcome) override
+    {
+        for (auto const dir : { TR_UP, TR_DOWN })
+        {
+            update_direction(dir, outcome.by_direction[direction_index(dir)]);
+        }
+    }
+
+protected:
+    [[nodiscard]] StrictCurveParameters parameters(tr_direction dir) const noexcept override
+    {
+        return dynamic_[direction_index(dir)].params;
+    }
+
+private:
+    static void reset_window(DynamicDirectionState& state) noexcept
+    {
+        state.window_pulses = 0U;
+        state.fully_utilized_pulses = 0U;
+        state.high_pressure_pulses = 0U;
+        state.underfilled_lower_demand_pulses = 0U;
+    }
+
+    static void tighten(DynamicDirectionState& state) noexcept
+    {
+        state.params.normal_low_exponent = std::min(
+            DynamicMax.normal_low_exponent,
+            state.params.normal_low_exponent + DynamicStep.normal_low_exponent);
+        state.params.low_exponent = std::min(DynamicMax.low_exponent, state.params.low_exponent + DynamicStep.low_exponent);
+    }
+
+    static void relax(DynamicDirectionState& state) noexcept
+    {
+        auto const min_params = relaxed_curve_parameters();
+        state.params.normal_low_exponent = std::max(
+            min_params.normal_low_exponent,
+            state.params.normal_low_exponent - DynamicStep.normal_low_exponent);
+        state.params.low_exponent = std::max(min_params.low_exponent, state.params.low_exponent - DynamicStep.low_exponent);
+    }
+
+    void update_direction(tr_direction dir, tr_strict_bandwidth_curve_pulse_outcome::DirectionState const& outcome)
+    {
+        auto& state = dynamic_[direction_index(dir)];
+        auto const budget = pulse_budget(dir);
+
+        if (budget == 0U)
+        {
+            reset_window(state);
+            state.params = balanced_curve_parameters();
+            return;
+        }
+
+        auto const total_piece = outcome.piece_bytes[0] + outcome.piece_bytes[1] + outcome.piece_bytes[2];
+        auto const lower_demand = outcome.piece_bytes[1] != 0U || outcome.piece_bytes[2] != 0U || outcome.had_blocked_work[1] ||
+            outcome.had_blocked_work[2] || outcome.has_pending_work[1] || outcome.has_pending_work[2];
+        auto const high_pressure = outcome.had_blocked_work[0] || outcome.has_pending_work[0];
+        auto const fully_utilized = lower_demand && total_piece * 100U >= budget * 98U;
+        auto const underfilled_with_lower_demand = lower_demand && total_piece * 100U < budget * 95U;
+
+        ++state.window_pulses;
+        state.fully_utilized_pulses += fully_utilized ? 1U : 0U;
+        state.high_pressure_pulses += high_pressure ? 1U : 0U;
+        state.underfilled_lower_demand_pulses += underfilled_with_lower_demand ? 1U : 0U;
+
+        if (state.window_pulses < DynamicWindowPulses)
+        {
+            return;
+        }
+
+        if (state.underfilled_lower_demand_pulses * 2U >= state.window_pulses)
+        {
+            relax(state);
+        }
+        else if (
+            state.fully_utilized_pulses * 4U >= state.window_pulses * 3U &&
+            state.high_pressure_pulses * 2U >= state.window_pulses)
+        {
+            tighten(state);
+        }
+
+        reset_window(state);
+    }
+
+private:
+    std::array<DynamicDirectionState, 2> dynamic_ = {};
 };
 
 } // namespace
@@ -222,5 +371,18 @@ std::unique_ptr<tr_strict_bandwidth_curve_policy> tr_strict_bandwidth_curve_poli
     size_t execution_increment,
     size_t release_quantum)
 {
-    return std::make_unique<tr_fixed_strict_bandwidth_curve_policy>(curve, execution_increment, release_quantum);
+    switch (curve)
+    {
+    case tr_strict_bandwidth_curve::Dynamic:
+        return std::make_unique<tr_dynamic_strict_bandwidth_curve_policy>(execution_increment, release_quantum);
+
+    case tr_strict_bandwidth_curve::Relaxed:
+    case tr_strict_bandwidth_curve::Balanced:
+    case tr_strict_bandwidth_curve::Aggressive:
+    default:
+        return std::make_unique<tr_fixed_strict_bandwidth_curve_policy>(
+            preset_curve_parameters(curve),
+            execution_increment,
+            release_quantum);
+    }
 }

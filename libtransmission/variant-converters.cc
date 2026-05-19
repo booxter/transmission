@@ -22,10 +22,11 @@ auto constexpr BandwidthAllocatorKeys = std::array<std::pair<std::string_view, t
     { "strict", tr_bandwidth_allocator_mode::Strict },
 } };
 
-auto constexpr StrictBandwidthCurveKeys = std::array<std::pair<std::string_view, tr_strict_bandwidth_curve>, 3>{ {
+auto constexpr StrictBandwidthCurveKeys = std::array<std::pair<std::string_view, tr_strict_bandwidth_curve>, 4>{ {
     { "relaxed", tr_strict_bandwidth_curve::Relaxed },
     { "balanced", tr_strict_bandwidth_curve::Balanced },
     { "aggressive", tr_strict_bandwidth_curve::Aggressive },
+    { "dynamic", tr_strict_bandwidth_curve::Dynamic },
 } };
 
 auto constexpr EncryptionKeys = std::array<std::pair<std::string_view, tr_encryption_mode>, 3>{ {

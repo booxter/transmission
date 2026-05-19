@@ -216,7 +216,7 @@ TEST_F(SettingsTest, invalidBandwidthAllocatorFallsBackToDefaultAndWarns)
 TEST_F(SettingsTest, canLoadStrictBandwidthCurve)
 {
     static auto constexpr Key = TR_KEY_bandwidth_strict_limited_curve;
-    static auto constexpr ExpectedValue = tr_strict_bandwidth_curve::Aggressive;
+    static auto constexpr ExpectedValue = tr_strict_bandwidth_curve::Dynamic;
 
     auto settings = std::make_unique<tr_session_settings>();
     ASSERT_NE(ExpectedValue, settings->bandwidth_strict_limited_curve);
@@ -230,7 +230,7 @@ TEST_F(SettingsTest, canLoadStrictBandwidthCurve)
 
     settings = std::make_unique<tr_session_settings>();
     tr_variantInitDict(&dict, 1);
-    tr_variantDictAddStrView(&dict, Key, "aggressive");
+    tr_variantDictAddStrView(&dict, Key, "dynamic");
     settings->load(&dict);
     tr_variantClear(&dict);
     EXPECT_EQ(ExpectedValue, settings->bandwidth_strict_limited_curve);
@@ -239,7 +239,7 @@ TEST_F(SettingsTest, canLoadStrictBandwidthCurve)
 TEST_F(SettingsTest, canSaveStrictBandwidthCurve)
 {
     static auto constexpr Key = TR_KEY_bandwidth_strict_limited_curve;
-    static auto constexpr ChangedValue = tr_strict_bandwidth_curve::Relaxed;
+    static auto constexpr ChangedValue = tr_strict_bandwidth_curve::Dynamic;
 
     auto settings = tr_session_settings{};
     ASSERT_NE(ChangedValue, settings.bandwidth_strict_limited_curve);
@@ -250,7 +250,7 @@ TEST_F(SettingsTest, canSaveStrictBandwidthCurve)
     settings.save(&dict);
     auto val = std::string_view{};
     ASSERT_TRUE(tr_variantDictFindStrView(&dict, Key, &val));
-    EXPECT_EQ("relaxed"sv, val);
+    EXPECT_EQ("dynamic"sv, val);
     tr_variantClear(&dict);
 }
 
