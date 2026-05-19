@@ -2260,6 +2260,10 @@ struct HighPeerDiagnostics
     bool is_choked = false;
     bool has_upload_bandwidth_left = false;
     bool is_waiting_for_can_write = false;
+    int last_write_error_code = 0;
+    bool last_write_retryable = false;
+    uint64_t last_write_bytes = 0U;
+    uint64_t last_write_piece_bytes = 0U;
     uint64_t request_blocks = 0U;
     uint64_t piece_bytes = 0U;
     uint64_t protocol_bytes = 0U;
@@ -2332,7 +2336,7 @@ struct HighPeerDiagnostics
 
         first = false;
         formatted += fmt::format(
-            FMT_STRING("tor{}@{}{{I{} C{} S{} BW{} W{} req:{} piece:{} proto:{} up:{}}}"),
+            FMT_STRING("tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] req:{} piece:{} proto:{} up:{}}}"),
             peer.torrent_id,
             peer.display_name,
             peer.is_interested ? 1 : 0,
@@ -2340,6 +2344,10 @@ struct HighPeerDiagnostics
             peer.is_seed ? 1 : 0,
             peer.has_upload_bandwidth_left ? 1 : 0,
             peer.is_waiting_for_can_write ? 1 : 0,
+            peer.last_write_bytes,
+            peer.last_write_piece_bytes,
+            peer.last_write_error_code,
+            peer.last_write_retryable ? 1 : 0,
             peer.request_blocks,
             peer.piece_bytes,
             peer.protocol_bytes,
@@ -2469,6 +2477,7 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
 
             if (priority == TR_PRI_HIGH && (keep_high_swarm || is_interested || is_choked))
             {
+                auto const last_write = peer->last_write_attempt_diagnostics();
                 high_peers.emplace_back(
                     HighPeerDiagnostics{
                         .torrent_id = tor->id(),
@@ -2478,6 +2487,10 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                         .is_choked = is_choked,
                         .has_upload_bandwidth_left = peer->has_upload_bandwidth_left(),
                         .is_waiting_for_can_write = peer->is_waiting_for_can_write(),
+                        .last_write_error_code = last_write.error_code,
+                        .last_write_retryable = last_write.retryable,
+                        .last_write_bytes = last_write.bytes_transferred,
+                        .last_write_piece_bytes = last_write.piece_bytes,
                         .request_blocks = n_requests,
                         .piece_bytes = piece_bytes,
                         .protocol_bytes = protocol_bytes,

@@ -424,6 +424,7 @@ TEST_F(StrictBandwidthSchedulerTest, stalledWriterWaitsForWriteReadyWithBuffered
     auto sent = size_t{ 0U };
     auto waiting_for_write = bool{};
     auto pending_piece_bytes = size_t{ 0U };
+    auto last_write = tr_peerIo::WriteAttemptDiagnostics{};
     auto done = std::atomic_bool{ false };
 
     session_->runInSessionThread(
@@ -433,6 +434,7 @@ TEST_F(StrictBandwidthSchedulerTest, stalledWriterWaitsForWriteReadyWithBuffered
             high_io->write_bytes(std::data(high_payload), std::size(high_payload), true);
             pending_piece_bytes = high_io->pending_piece_output_size();
             waiting_for_write = high_io->is_waiting_for_can_write();
+            last_write = high_io->last_write_attempt_diagnostics();
             sent = std::size(readAvailable(high_sock));
             high_io->clear();
             done = true;
@@ -444,6 +446,7 @@ TEST_F(StrictBandwidthSchedulerTest, stalledWriterWaitsForWriteReadyWithBuffered
     EXPECT_LT(sent, std::size(high_payload));
     EXPECT_LT(0U, pending_piece_bytes);
     EXPECT_TRUE(waiting_for_write);
+    EXPECT_LE(last_write.piece_bytes, last_write.bytes_transferred);
 
     tr_net_close_socket(high_sock);
 }

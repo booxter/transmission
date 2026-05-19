@@ -327,11 +327,14 @@ tr_peerIo::FlushResult tr_peerIo::try_write(size_t max)
     tr_error* error = nullptr;
     auto const n_written = socket_.try_write(buf, max, &error);
     auto piece_bytes = size_t{ 0U };
+    last_write_attempt_ = {};
     // enable further writes if there's more data to write
     set_enabled(Dir, !std::empty(buf) && (error == nullptr || canRetryFromError(error->code)));
 
     if (error != nullptr)
     {
+        last_write_attempt_.error_code = error->code;
+        last_write_attempt_.retryable = canRetryFromError(error->code);
         if (!canRetryFromError(error->code))
         {
             tr_logAddTraceIo(
@@ -346,6 +349,9 @@ tr_peerIo::FlushResult tr_peerIo::try_write(size_t max)
     {
         piece_bytes = did_write_wrapper(n_written);
     }
+
+    last_write_attempt_.bytes_transferred = n_written;
+    last_write_attempt_.piece_bytes = piece_bytes;
 
     return { n_written, piece_bytes };
 }

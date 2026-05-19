@@ -466,6 +466,11 @@ public:
         return io->is_waiting_for_can_write();
     }
 
+    [[nodiscard]] tr_peerIo::WriteAttemptDiagnostics last_write_attempt_diagnostics() const noexcept override
+    {
+        return io->last_write_attempt_diagnostics();
+    }
+
     [[nodiscard]] std::pair<tr_address, tr_port> socketAddress() const override
     {
         return io->socket_address();

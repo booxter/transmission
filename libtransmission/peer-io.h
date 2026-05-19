@@ -54,6 +54,14 @@ public:
         size_t piece_bytes = 0U;
     };
 
+    struct WriteAttemptDiagnostics
+    {
+        size_t bytes_transferred = 0U;
+        size_t piece_bytes = 0U;
+        int error_code = 0;
+        bool retryable = false;
+    };
+
     tr_peerIo(
         tr_session* session_in,
         tr_sha1_digest_t const* info_hash,
@@ -178,6 +186,10 @@ public:
     }
 
     [[nodiscard]] bool is_waiting_for_can_write() const noexcept;
+    [[nodiscard]] WriteAttemptDiagnostics last_write_attempt_diagnostics() const noexcept
+    {
+        return last_write_attempt_;
+    }
 
     [[nodiscard]] auto get_piece_speed_bytes_per_second(uint64_t now, tr_direction dir) const noexcept
     {
@@ -405,4 +417,6 @@ private:
     bool fast_extension_supported_ = false;
     bool is_cleared_ = false;
     bool defer_immediate_outbuf_ready_ = false;
+
+    WriteAttemptDiagnostics last_write_attempt_ = {};
 };

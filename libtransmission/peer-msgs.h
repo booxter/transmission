@@ -61,6 +61,7 @@ public:
     [[nodiscard]] virtual size_t pending_piece_output_size() const noexcept = 0;
     [[nodiscard]] virtual bool has_upload_bandwidth_left() const noexcept = 0;
     [[nodiscard]] virtual bool is_waiting_for_can_write() const noexcept = 0;
+    [[nodiscard]] virtual tr_peerIo::WriteAttemptDiagnostics last_write_attempt_diagnostics() const noexcept = 0;
 
     [[nodiscard]] virtual std::pair<tr_address, tr_port> socketAddress() const = 0;
 
