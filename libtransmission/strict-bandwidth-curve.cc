@@ -26,6 +26,15 @@ struct StrictCurveParameters
 
 [[nodiscard]] auto make_snapshot_state(
     StrictCurveParameters params,
+    size_t pulse_budget = 0U,
+    size_t high_piece_bytes = 0U,
+    size_t lower_piece_bytes = 0U,
+    size_t normal_low_max_allowed = 0U,
+    size_t normal_low_max_remaining = 0U,
+    size_t low_max_allowed = 0U,
+    size_t low_max_remaining = 0U,
+    uint64_t first_normal_grant_msec = 0U,
+    uint64_t first_low_grant_msec = 0U,
     size_t window_pulses = 0U,
     size_t fully_utilized_pulses = 0U,
     size_t high_pressure_pulses = 0U,
@@ -35,6 +44,15 @@ struct StrictCurveParameters
     auto state = tr_strict_bandwidth_curve_policy_snapshot::DirectionState{};
     state.normal_low_exponent = params.normal_low_exponent;
     state.low_exponent = params.low_exponent;
+    state.pulse_budget = pulse_budget;
+    state.high_piece_bytes = high_piece_bytes;
+    state.lower_piece_bytes = lower_piece_bytes;
+    state.normal_low_max_allowed = normal_low_max_allowed;
+    state.normal_low_max_remaining = normal_low_max_remaining;
+    state.low_max_allowed = low_max_allowed;
+    state.low_max_remaining = low_max_remaining;
+    state.first_normal_grant_msec = first_normal_grant_msec;
+    state.first_low_grant_msec = first_low_grant_msec;
     state.window_pulses = window_pulses;
     state.fully_utilized_pulses = fully_utilized_pulses;
     state.high_pressure_pulses = high_pressure_pulses;
@@ -83,6 +101,12 @@ private:
         size_t pulse_budget = 0U;
         size_t high_piece = 0U;
         size_t normal_low_piece = 0U;
+        size_t normal_low_max_allowed = 0U;
+        size_t normal_low_max_remaining = 0U;
+        size_t low_max_allowed = 0U;
+        size_t low_max_remaining = 0U;
+        uint64_t first_normal_grant_msec = 0U;
+        uint64_t first_low_grant_msec = 0U;
     };
 
 public:
@@ -110,10 +134,12 @@ public:
         }
 
         auto const params = parameters(query.dir);
-        auto const& retention = retention_[direction_index(query.dir)];
+        auto& retention = retention_[direction_index(query.dir)];
         auto const normal_low_allowed = released_bytes(query.dir, params.normal_low_exponent, query.now_msec);
         auto const shared_consumed = retained_lower_consumed(retention);
         auto const normal_low_remaining = normal_low_allowed > shared_consumed ? normal_low_allowed - shared_consumed : 0U;
+        retention.normal_low_max_allowed = std::max(retention.normal_low_max_allowed, normal_low_allowed);
+        retention.normal_low_max_remaining = std::max(retention.normal_low_max_remaining, normal_low_remaining);
         auto const normal_low_target = next_retention_target(shared_consumed, retention.pulse_budget);
         auto const normal_low_release_increment = normal_low_target - shared_consumed;
 
@@ -127,11 +153,17 @@ public:
                 };
             }
 
+            if (retention.first_normal_grant_msec == 0U)
+            {
+                retention.first_normal_grant_msec = query.now_msec - pulse_start_msec_;
+            }
             return { std::min(execution_increment_, normal_low_remaining), 0U };
         }
 
         auto const low_allowed = released_bytes(query.dir, params.low_exponent, query.now_msec);
         auto const low_remaining = low_allowed > shared_consumed ? low_allowed - shared_consumed : 0U;
+        retention.low_max_allowed = std::max(retention.low_max_allowed, low_allowed);
+        retention.low_max_remaining = std::max(retention.low_max_remaining, low_remaining);
         auto const low_target = next_retention_target(shared_consumed, retention.pulse_budget);
         auto const low_release_increment = low_target - shared_consumed;
 
@@ -144,6 +176,10 @@ public:
                          next_release_msec(shared_consumed, retention.pulse_budget, params.low_exponent, query.now_msec)) };
         }
 
+        if (retention.first_low_grant_msec == 0U)
+        {
+            retention.first_low_grant_msec = query.now_msec - pulse_start_msec_;
+        }
         return { std::min(execution_increment_, std::min(normal_low_remaining, low_remaining)), 0U };
     }
 
@@ -171,6 +207,11 @@ protected:
     [[nodiscard]] auto pulse_budget(tr_direction dir) const noexcept
     {
         return retention_[direction_index(dir)].pulse_budget;
+    }
+
+    [[nodiscard]] auto const& retention_state(tr_direction dir) const noexcept
+    {
+        return retention_[direction_index(dir)];
     }
 
 private:
@@ -246,7 +287,7 @@ private:
     uint64_t pulse_start_msec_ = 0U;
     uint64_t pulse_duration_msec_ = 0U;
     uint64_t pulse_deadline_msec_ = 0U;
-    std::array<LimitedRetentionState, 2> retention_ = {};
+    mutable std::array<LimitedRetentionState, 2> retention_ = {};
 };
 
 class tr_fixed_strict_bandwidth_curve_policy final : public tr_power_strict_bandwidth_curve_policy
@@ -268,8 +309,21 @@ public:
     [[nodiscard]] tr_strict_bandwidth_curve_policy_snapshot snapshot() const override
     {
         auto snapshot = tr_strict_bandwidth_curve_policy_snapshot{};
-        snapshot.by_direction[direction_index(TR_UP)] = make_snapshot_state(params_);
-        snapshot.by_direction[direction_index(TR_DOWN)] = make_snapshot_state(params_);
+        for (auto const dir : { TR_UP, TR_DOWN })
+        {
+            auto const& retention = retention_state(dir);
+            snapshot.by_direction[direction_index(dir)] = make_snapshot_state(
+                params_,
+                retention.pulse_budget,
+                retention.high_piece,
+                retention.normal_low_piece,
+                retention.normal_low_max_allowed,
+                retention.normal_low_max_remaining,
+                retention.low_max_allowed,
+                retention.low_max_remaining,
+                retention.first_normal_grant_msec,
+                retention.first_low_grant_msec);
+        }
         return snapshot;
     }
 
@@ -321,8 +375,18 @@ public:
         for (auto const dir : { TR_UP, TR_DOWN })
         {
             auto const& state = dynamic_[direction_index(dir)];
+            auto const& retention = retention_state(dir);
             snapshot.by_direction[direction_index(dir)] = make_snapshot_state(
                 state.params,
+                retention.pulse_budget,
+                retention.high_piece,
+                retention.normal_low_piece,
+                retention.normal_low_max_allowed,
+                retention.normal_low_max_remaining,
+                retention.low_max_allowed,
+                retention.low_max_remaining,
+                retention.first_normal_grant_msec,
+                retention.first_low_grant_msec,
                 state.window_pulses,
                 state.fully_utilized_pulses,
                 state.high_pressure_pulses,

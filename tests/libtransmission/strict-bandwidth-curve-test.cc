@@ -214,6 +214,38 @@ TEST(StrictBandwidthCurvePolicyTest, fixedSnapshotReportsPresetParameters)
     EXPECT_EQ(tr_strict_bandwidth_curve_adjustment::Hold, snapshot.by_direction[0].last_adjustment);
 }
 
+TEST(StrictBandwidthCurvePolicyTest, snapshotCapturesLowerReleaseProgress)
+{
+    auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Balanced, 3000U, 1024U);
+
+    auto const pulse = make_pulse();
+    policy->on_pulse_start(pulse);
+
+    auto query = tr_strict_bandwidth_curve_query{};
+    query.dir = TR_UP;
+    query.priority = TR_PRI_NORMAL;
+    query.now_msec = 1325U;
+    query.applies = true;
+    auto const admit = policy->admit(query);
+
+    auto charge = tr_strict_bandwidth_curve_charge{};
+    charge.dir = TR_UP;
+    charge.priority = TR_PRI_NORMAL;
+    charge.piece_bytes = std::min<size_t>(1024U, admit.piece_limit);
+    charge.applies = true;
+    policy->charge(charge);
+
+    auto const snapshot = policy->snapshot();
+    auto const& state = snapshot.by_direction[0];
+
+    EXPECT_EQ(6000U, state.pulse_budget);
+    EXPECT_EQ(charge.piece_bytes, state.lower_piece_bytes);
+    EXPECT_GT(state.normal_low_max_allowed, 0U);
+    EXPECT_GT(state.normal_low_max_remaining, 0U);
+    EXPECT_EQ(325U, state.first_normal_grant_msec);
+    EXPECT_EQ(0U, state.first_low_grant_msec);
+}
+
 TEST(StrictBandwidthCurvePolicyTest, dynamicStartsFromBalancedCurve)
 {
     auto dynamic = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Dynamic, 3000U, 1024U);

@@ -132,6 +132,15 @@ struct tr_strict_bandwidth_curve_policy_snapshot
     {
         double normal_low_exponent = 0.0;
         double low_exponent = 0.0;
+        size_t pulse_budget = 0U;
+        size_t high_piece_bytes = 0U;
+        size_t lower_piece_bytes = 0U;
+        size_t normal_low_max_allowed = 0U;
+        size_t normal_low_max_remaining = 0U;
+        size_t low_max_allowed = 0U;
+        size_t low_max_remaining = 0U;
+        uint64_t first_normal_grant_msec = 0U;
+        uint64_t first_low_grant_msec = 0U;
         size_t window_pulses = 0U;
         size_t fully_utilized_pulses = 0U;
         size_t high_pressure_pulses = 0U;

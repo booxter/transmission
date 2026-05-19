@@ -259,6 +259,12 @@ private:
         auto const budget = current_pulse_budget_[index];
         auto const piece_total = outcome.piece_bytes[0] + outcome.piece_bytes[1] + outcome.piece_bytes[2];
         auto const utilization = budget == 0U ? uint64_t{ 0U } : piece_total * 100U / budget;
+        auto const first_normal_grant = state.first_normal_grant_msec == 0U ?
+            std::string{ "-" } :
+            fmt::format(FMT_STRING("{}"), state.first_normal_grant_msec);
+        auto const first_low_grant = state.first_low_grant_msec == 0U ?
+            std::string{ "-" } :
+            fmt::format(FMT_STRING("{}"), state.first_low_grant_msec);
 
         auto const piece = PriorityCounters{
             static_cast<uint64_t>(outcome.piece_bytes[0]),
@@ -300,7 +306,7 @@ private:
         {
             return fmt::format(
                 "budget={} util={} piece={} blocked={} pending={} write={{att:{} zero:{} part:{}}} "
-                "curve={{fixed p=[{:.2f},{:.2f}]}}",
+                "curve={{fixed p=[{:.2f},{:.2f}] gate={{cons:[{},{}] nl:[{},{},{}] low:[{},{},{}]}}}}",
                 budget,
                 utilization,
                 format_priority_counters(piece),
@@ -310,12 +316,20 @@ private:
                 format_priority_counters(zero_write_attempts),
                 format_priority_counters(partial_write_attempts),
                 state.normal_low_exponent,
-                state.low_exponent);
+                state.low_exponent,
+                state.high_piece_bytes,
+                state.lower_piece_bytes,
+                state.normal_low_max_allowed,
+                state.normal_low_max_remaining,
+                first_normal_grant,
+                state.low_max_allowed,
+                state.low_max_remaining,
+                first_low_grant);
         }
 
         return fmt::format(
             "budget={} util={} piece={} blocked={} pending={} write={{att:{} zero:{} part:{}}} "
-            "curve={{dynamic p=[{:.2f},{:.2f}] win=[{},{},{},{}] last={}}}",
+            "curve={{dynamic p=[{:.2f},{:.2f}] gate={{cons:[{},{}] nl:[{},{},{}] low:[{},{},{}]}} win=[{},{},{},{}] last={}}}",
             budget,
             utilization,
             format_priority_counters(piece),
@@ -326,6 +340,14 @@ private:
             format_priority_counters(partial_write_attempts),
             state.normal_low_exponent,
             state.low_exponent,
+            state.high_piece_bytes,
+            state.lower_piece_bytes,
+            state.normal_low_max_allowed,
+            state.normal_low_max_remaining,
+            first_normal_grant,
+            state.low_max_allowed,
+            state.low_max_remaining,
+            first_low_grant,
             state.window_pulses,
             state.fully_utilized_pulses,
             state.high_pressure_pulses,
