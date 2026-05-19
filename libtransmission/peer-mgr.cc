@@ -2234,6 +2234,18 @@ struct UploadSourceDiagnostics
     PriorityTotals peers_with_protocol_output;
     PriorityTotals protocol_output_bytes;
     PriorityTotals upload_rate_bps;
+    PriorityTotals peers_with_accepted_requests;
+    PriorityTotals accepted_request_blocks;
+    PriorityTotals peers_with_staged_piece_flow;
+    PriorityTotals staged_piece_blocks;
+    PriorityTotals staged_piece_bytes;
+    PriorityTotals peers_waiting_for_can_write;
+    PriorityTotals peers_with_retryable_zero_write;
+    PriorityTotals stop_no_requests;
+    PriorityTotals stop_buffer_target;
+    PriorityTotals stop_peer_choked;
+    PriorityTotals stop_invalid_request;
+    PriorityTotals stop_missing_piece;
 };
 
 struct HighSwarmDiagnostics
@@ -2251,8 +2263,9 @@ struct HighSwarmDiagnostics
     uint64_t upload_rate_bps = 0U;
 };
 
-struct HighPeerDiagnostics
+struct UploadPeerDiagnostics
 {
+    tr_priority_t priority = TR_PRI_NORMAL;
     tr_torrent_id_t torrent_id = {};
     std::string display_name;
     bool is_seed = false;
@@ -2303,6 +2316,23 @@ struct HighPeerDiagnostics
 
     TR_ASSERT(false);
     return "unknown";
+}
+
+[[nodiscard]] auto format_priority_short_name(tr_priority_t priority)
+{
+    switch (priority)
+    {
+    case TR_PRI_HIGH:
+        return "H"sv;
+
+    case TR_PRI_NORMAL:
+        return "N"sv;
+
+    case TR_PRI_LOW:
+        return "L"sv;
+    }
+
+    return "?"sv;
 }
 
 [[nodiscard]] bool swarm_has_upload_demand(tr_swarm const* swarm, uint64_t now_msec)
@@ -2357,7 +2387,7 @@ struct HighPeerDiagnostics
     return formatted;
 }
 
-[[nodiscard]] auto format_high_peer_diagnostics(std::vector<HighPeerDiagnostics> const& diagnostics)
+[[nodiscard]] auto format_upload_peer_diagnostics(std::vector<UploadPeerDiagnostics> const& diagnostics, bool include_priority)
 {
     auto formatted = std::string{};
     auto first = true;
@@ -2372,8 +2402,9 @@ struct HighPeerDiagnostics
         first = false;
         formatted += fmt::format(
             FMT_STRING(
-                "tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] "
+                "{}tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] "
                 "src:[req+:{}/{} rej:{}/{}/{} stg:{}/{} stop:{} buf:{}/{}/{}] req:{} piece:{} proto:{} up:{}}}"),
+            include_priority ? fmt::format("{}:", format_priority_short_name(peer.priority)) : ""s,
             peer.torrent_id,
             peer.display_name,
             peer.is_interested ? 1 : 0,
@@ -2405,6 +2436,40 @@ struct HighPeerDiagnostics
     return formatted;
 }
 
+void note_fill_stop_reason(
+    UploadSourceDiagnostics& diagnostics,
+    tr_priority_t priority,
+    tr_peerMsgs::UploadFillStopReason reason)
+{
+    using Reason = tr_peerMsgs::UploadFillStopReason;
+
+    switch (reason)
+    {
+    case Reason::None:
+        break;
+
+    case Reason::NoRequests:
+        diagnostics.stop_no_requests.add(priority);
+        break;
+
+    case Reason::BufferTargetReached:
+        diagnostics.stop_buffer_target.add(priority);
+        break;
+
+    case Reason::PeerChoked:
+        diagnostics.stop_peer_choked.add(priority);
+        break;
+
+    case Reason::InvalidRequest:
+        diagnostics.stop_invalid_request.add(priority);
+        break;
+
+    case Reason::MissingPiece:
+        diagnostics.stop_missing_piece.add(priority);
+        break;
+    }
+}
+
 void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t now_msec)
 {
     auto const* const session = mgr->session;
@@ -2415,7 +2480,8 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
 
     auto diagnostics = UploadSourceDiagnostics{};
     auto high_swarms = std::vector<HighSwarmDiagnostics>{};
-    auto high_peers = std::vector<HighPeerDiagnostics>{};
+    auto high_peers = std::vector<UploadPeerDiagnostics>{};
+    auto lower_peers = std::vector<UploadPeerDiagnostics>{};
 
     for (auto* const tor : session->torrents())
     {
@@ -2523,39 +2589,75 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                 }
             }
 
+            auto const is_waiting_for_can_write = peer->is_waiting_for_can_write();
+            if (is_waiting_for_can_write)
+            {
+                diagnostics.peers_waiting_for_can_write.add(priority);
+            }
+
+            auto const last_write = peer->last_write_attempt_diagnostics();
+            if (last_write.retryable && last_write.error_code != 0 && last_write.bytes_transferred == 0U)
+            {
+                diagnostics.peers_with_retryable_zero_write.add(priority);
+            }
+
+            auto const pipeline = peer->consume_upload_pipeline_diagnostics(now_msec);
+            if (pipeline.accepted_request_blocks != 0U)
+            {
+                diagnostics.peers_with_accepted_requests.add(priority);
+                diagnostics.accepted_request_blocks.add(priority, pipeline.accepted_request_blocks);
+            }
+
+            if (pipeline.staged_piece_blocks != 0U)
+            {
+                diagnostics.peers_with_staged_piece_flow.add(priority);
+                diagnostics.staged_piece_blocks.add(priority, pipeline.staged_piece_blocks);
+                diagnostics.staged_piece_bytes.add(priority, pipeline.staged_piece_bytes);
+            }
+
+            note_fill_stop_reason(diagnostics, priority, pipeline.fill_stop_reason);
+
+            auto peer_diagnostics = UploadPeerDiagnostics{
+                .priority = priority,
+                .torrent_id = tor->id(),
+                .display_name = peer->display_name(),
+                .is_seed = is_seed,
+                .is_interested = is_interested,
+                .is_choked = is_choked,
+                .has_upload_bandwidth_left = peer->has_upload_bandwidth_left(),
+                .is_waiting_for_can_write = is_waiting_for_can_write,
+                .last_write_error_code = last_write.error_code,
+                .last_write_retryable = last_write.retryable,
+                .last_write_bytes = last_write.bytes_transferred,
+                .last_write_piece_bytes = last_write.piece_bytes,
+                .accepted_request_blocks = pipeline.accepted_request_blocks,
+                .accepted_request_bytes = pipeline.accepted_request_bytes,
+                .rejected_request_blocks_peer_choked = pipeline.rejected_request_blocks_peer_choked,
+                .rejected_request_blocks_reqq_full = pipeline.rejected_request_blocks_reqq_full,
+                .rejected_request_blocks_invalid = pipeline.rejected_request_blocks_invalid,
+                .staged_piece_blocks = pipeline.staged_piece_blocks,
+                .staged_piece_bytes = pipeline.staged_piece_bytes,
+                .current_write_buffer = pipeline.current_write_buffer,
+                .desired_write_buffer = pipeline.desired_write_buffer,
+                .write_buffer_space = pipeline.write_buffer_space,
+                .fill_stop_reason = pipeline.fill_stop_reason,
+                .request_blocks = n_requests,
+                .piece_bytes = piece_bytes,
+                .protocol_bytes = protocol_bytes,
+                .upload_rate_bps = upload_rate_bps,
+            };
+
             if (priority == TR_PRI_HIGH && (keep_high_swarm || is_interested || is_choked))
             {
-                auto const last_write = peer->last_write_attempt_diagnostics();
-                auto const pipeline = peer->consume_upload_pipeline_diagnostics(now_msec);
-                high_peers.emplace_back(
-                    HighPeerDiagnostics{
-                        .torrent_id = tor->id(),
-                        .display_name = peer->display_name(),
-                        .is_seed = is_seed,
-                        .is_interested = is_interested,
-                        .is_choked = is_choked,
-                        .has_upload_bandwidth_left = peer->has_upload_bandwidth_left(),
-                        .is_waiting_for_can_write = peer->is_waiting_for_can_write(),
-                        .last_write_error_code = last_write.error_code,
-                        .last_write_retryable = last_write.retryable,
-                        .last_write_bytes = last_write.bytes_transferred,
-                        .last_write_piece_bytes = last_write.piece_bytes,
-                        .accepted_request_blocks = pipeline.accepted_request_blocks,
-                        .accepted_request_bytes = pipeline.accepted_request_bytes,
-                        .rejected_request_blocks_peer_choked = pipeline.rejected_request_blocks_peer_choked,
-                        .rejected_request_blocks_reqq_full = pipeline.rejected_request_blocks_reqq_full,
-                        .rejected_request_blocks_invalid = pipeline.rejected_request_blocks_invalid,
-                        .staged_piece_blocks = pipeline.staged_piece_blocks,
-                        .staged_piece_bytes = pipeline.staged_piece_bytes,
-                        .current_write_buffer = pipeline.current_write_buffer,
-                        .desired_write_buffer = pipeline.desired_write_buffer,
-                        .write_buffer_space = pipeline.write_buffer_space,
-                        .fill_stop_reason = pipeline.fill_stop_reason,
-                        .request_blocks = n_requests,
-                        .piece_bytes = piece_bytes,
-                        .protocol_bytes = protocol_bytes,
-                        .upload_rate_bps = upload_rate_bps,
-                    });
+                high_peers.emplace_back(std::move(peer_diagnostics));
+            }
+            else if (
+                priority != TR_PRI_HIGH &&
+                (n_requests != 0U || piece_bytes != 0U || protocol_bytes != 0U || upload_rate_bps != 0U ||
+                 pipeline.accepted_request_blocks != 0U || pipeline.staged_piece_blocks != 0U || is_waiting_for_can_write ||
+                 (last_write.error_code != 0 && (last_write.bytes_transferred != 0U || last_write.retryable))))
+            {
+                lower_peers.emplace_back(std::move(peer_diagnostics));
             }
         }
 
@@ -2571,6 +2673,8 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             "swarms={{peers:{} demand:{} maxed:{}}} "
             "peers={{connected:{} eligible:{} sending:{}}} "
             "work={{req_peers:{} req_blocks:{} piece_peers:{} piece_bytes:{} proto_peers:{} proto_bytes:{}}} "
+            "flow={{req+_peers:{} req+_blocks:{} stg_peers:{} stg_blocks:{} stg_bytes:{} wait:{} zero_eagain:{} "
+            "stop:{{req0:{} buf:{} choked:{} invalid:{} missing:{}}}}} "
             "rate_bps={}",
             diagnostics.swarms_with_peers.format(),
             diagnostics.swarms_with_demand.format(),
@@ -2584,6 +2688,18 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             diagnostics.piece_output_bytes.format(),
             diagnostics.peers_with_protocol_output.format(),
             diagnostics.protocol_output_bytes.format(),
+            diagnostics.peers_with_accepted_requests.format(),
+            diagnostics.accepted_request_blocks.format(),
+            diagnostics.peers_with_staged_piece_flow.format(),
+            diagnostics.staged_piece_blocks.format(),
+            diagnostics.staged_piece_bytes.format(),
+            diagnostics.peers_waiting_for_can_write.format(),
+            diagnostics.peers_with_retryable_zero_write.format(),
+            diagnostics.stop_no_requests.format(),
+            diagnostics.stop_buffer_target.format(),
+            diagnostics.stop_peer_choked.format(),
+            diagnostics.stop_invalid_request.format(),
+            diagnostics.stop_missing_piece.format(),
             diagnostics.upload_rate_bps.format()),
         "peer-mgr");
 
@@ -2616,15 +2732,44 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
         auto const peer_count = std::min(std::size(high_peers), max_peers);
         auto limited_swarms = std::vector<HighSwarmDiagnostics>{ std::begin(high_swarms),
                                                                  std::begin(high_swarms) + swarm_count };
-        auto limited_peers = std::vector<HighPeerDiagnostics>{ std::begin(high_peers), std::begin(high_peers) + peer_count };
+        auto limited_peers = std::vector<UploadPeerDiagnostics>{ std::begin(high_peers), std::begin(high_peers) + peer_count };
 
         tr_logAddInfo(
             fmt::format(
                 "strict-upload-high-detail swarms=[{}]{} peers=[{}]{}",
                 format_high_swarm_diagnostics(limited_swarms),
                 std::size(high_swarms) > swarm_count ? fmt::format(", +{} more", std::size(high_swarms) - swarm_count) : ""sv,
-                format_high_peer_diagnostics(limited_peers),
+                format_upload_peer_diagnostics(limited_peers, false),
                 std::size(high_peers) > peer_count ? fmt::format(", +{} more", std::size(high_peers) - peer_count) : ""sv),
+            "peer-mgr");
+    }
+
+    if (!std::empty(lower_peers))
+    {
+        auto const max_peers = size_t{ 12U };
+        std::sort(
+            std::begin(lower_peers),
+            std::end(lower_peers),
+            [](auto const& a, auto const& b)
+            {
+                return std::tuple{
+                    a.piece_bytes,          a.request_blocks,          a.upload_rate_bps,    a.is_waiting_for_can_write,
+                    a.last_write_retryable, a.accepted_request_blocks, a.staged_piece_bytes,
+                } > std::tuple{
+                    b.piece_bytes,          b.request_blocks,          b.upload_rate_bps,    b.is_waiting_for_can_write,
+                    b.last_write_retryable, b.accepted_request_blocks, b.staged_piece_bytes,
+                };
+            });
+
+        auto const peer_count = std::min(std::size(lower_peers), max_peers);
+        auto limited_peers = std::vector<UploadPeerDiagnostics>{ std::begin(lower_peers),
+                                                                 std::begin(lower_peers) + peer_count };
+
+        tr_logAddInfo(
+            fmt::format(
+                "strict-upload-lower-detail peers=[{}]{}",
+                format_upload_peer_diagnostics(limited_peers, true),
+                std::size(lower_peers) > peer_count ? fmt::format(", +{} more", std::size(lower_peers) - peer_count) : ""sv),
             "peer-mgr");
     }
 }
