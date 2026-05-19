@@ -301,6 +301,11 @@ public:
         , callback_{ callback }
         , callback_data_{ callback_data }
     {
+        auto const now_msec = tr_time_msec();
+        peer_interested_changed_at_msec_ = now_msec;
+        peer_choke_changed_at_msec_ = now_msec;
+        request_queue_became_empty_at_msec_ = now_msec;
+
         if (torrent->allowsPex())
         {
             pex_timer_ = session->timerMaker().create([this]() { sendPex(); });
@@ -486,6 +491,23 @@ public:
         diagnostics.read_piece_bytes = read_diagnostics.piece_bytes;
         diagnostics.last_read_error_code = read_diagnostics.last_error_code;
         diagnostics.last_read_error_retryable = read_diagnostics.last_error_retryable;
+        diagnostics.current_request_queue_depth = std::size(peer_requested_);
+        diagnostics.ms_since_last_request_message = last_peer_request_message_at_msec_ != 0U ?
+            now_msec - last_peer_request_message_at_msec_ :
+            0U;
+        diagnostics.ms_since_peer_interested_change = peer_interested_changed_at_msec_ != 0U ?
+            now_msec - peer_interested_changed_at_msec_ :
+            0U;
+        diagnostics.ms_since_peer_choke_change = peer_choke_changed_at_msec_ != 0U ? now_msec - peer_choke_changed_at_msec_ :
+                                                                                     0U;
+        diagnostics.ms_since_request_queue_became_empty = request_queue_became_empty_at_msec_ != 0U ?
+            now_msec - request_queue_became_empty_at_msec_ :
+            0U;
+        diagnostics.ms_since_request_queue_became_nonempty = request_queue_became_nonempty_at_msec_ != 0U ?
+            now_msec - request_queue_became_nonempty_at_msec_ :
+            0U;
+        diagnostics.has_peer_advertised_reqq = reqq.has_value();
+        diagnostics.peer_advertised_reqq = reqq.value_or(0U);
         diagnostics.current_write_buffer = io->pending_protocol_output_size() + io->pending_piece_output_size();
         diagnostics.write_buffer_space = io->get_write_buffer_space(now_msec);
         diagnostics.desired_write_buffer = diagnostics.current_write_buffer + diagnostics.write_buffer_space;
@@ -536,6 +558,8 @@ public:
         else if (peer_is_choked_ != peer_is_choked)
         {
             peer_is_choked_ = peer_is_choked;
+            ++upload_pipeline_diagnostics_.peer_choke_transitions;
+            peer_choke_changed_at_msec_ = tr_time_msec();
 
             if (peer_is_choked_)
             {
@@ -772,6 +796,13 @@ public:
 
     mutable UploadPipelinePulseDiagnostics upload_pipeline_diagnostics_ = {};
 
+    uint64_t last_peer_request_message_at_msec_ = 0U;
+    uint64_t peer_interested_changed_at_msec_ = 0U;
+    uint64_t peer_choke_changed_at_msec_ = 0U;
+    uint64_t request_queue_became_empty_at_msec_ = 0U;
+    uint64_t request_queue_became_nonempty_at_msec_ = 0U;
+    bool request_queue_is_nonempty_ = false;
+
     std::vector<tr_pex> pex;
     std::vector<tr_pex> pex6;
 
@@ -793,6 +824,25 @@ public:
     std::unique_ptr<libtransmission::Timer> pex_timer_;
 
     tr_bitfield have_;
+
+    void note_request_queue_state(uint64_t now_msec)
+    {
+        auto const is_nonempty = !std::empty(peer_requested_);
+        if (request_queue_is_nonempty_ == is_nonempty)
+        {
+            return;
+        }
+
+        request_queue_is_nonempty_ = is_nonempty;
+        if (is_nonempty)
+        {
+            request_queue_became_nonempty_at_msec_ = now_msec;
+        }
+        else
+        {
+            request_queue_became_empty_at_msec_ = now_msec;
+        }
+    }
 
 private:
     std::array<bool, 2> is_active_ = { false, false };
@@ -940,6 +990,7 @@ void cancelAllRequestsToClient(tr_peerMsgsImpl* msgs)
     }
 
     msgs->peer_requested_.clear();
+    msgs->note_request_queue_state(tr_time_msec());
 }
 
 // ---
@@ -1386,16 +1437,20 @@ void fillOutputBuffer(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_msec)
 
 void peerMadeRequest(tr_peerMsgsImpl* msgs, struct peer_request const* req)
 {
+    auto const now_msec = tr_time_msec();
+    msgs->last_peer_request_message_at_msec_ = now_msec;
+
     if (canAddRequestFromPeer(msgs, *req))
     {
         msgs->peer_requested_.emplace_back(*req);
+        msgs->note_request_queue_state(now_msec);
         msgs->upload_pipeline_diagnostics_.request_queue_high_watermark = std::max<uint64_t>(
             msgs->upload_pipeline_diagnostics_.request_queue_high_watermark,
             std::size(msgs->peer_requested_));
         ++msgs->upload_pipeline_diagnostics_.accepted_request_blocks;
         msgs->upload_pipeline_diagnostics_.accepted_request_bytes += req->length;
         prefetchPieces(msgs);
-        fillOutputBuffer(msgs, tr_time(), tr_time_msec());
+        fillOutputBuffer(msgs, tr_time(), now_msec);
     }
     else if (msgs->io->supports_fext())
     {
@@ -1549,13 +1604,23 @@ ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmissi
 
     case BtPeerMsgs::Interested:
         logtrace(msgs, "got Interested");
-        msgs->peer_is_interested_ = true;
+        if (!msgs->peer_is_interested_)
+        {
+            msgs->peer_is_interested_ = true;
+            msgs->peer_interested_changed_at_msec_ = tr_time_msec();
+            ++msgs->upload_pipeline_diagnostics_.peer_interested_transitions;
+        }
         msgs->update_active(TR_CLIENT_TO_PEER);
         break;
 
     case BtPeerMsgs::NotInterested:
         logtrace(msgs, "got Not Interested");
-        msgs->peer_is_interested_ = false;
+        if (msgs->peer_is_interested_)
+        {
+            msgs->peer_is_interested_ = false;
+            msgs->peer_interested_changed_at_msec_ = tr_time_msec();
+            ++msgs->upload_pipeline_diagnostics_.peer_interested_transitions;
+        }
         msgs->update_active(TR_CLIENT_TO_PEER);
         break;
 
@@ -1616,6 +1681,7 @@ ReadResult process_peer_message(tr_peerMsgsImpl* msgs, uint8_t id, libtransmissi
             if (auto iter = std::find(std::begin(requests), std::end(requests), r); iter != std::end(requests))
             {
                 requests.erase(iter);
+                msgs->note_request_queue_state(tr_time_msec());
 
                 // bep6: "Even when a request is cancelled, the peer
                 // receiving the cancel should respond with either the
@@ -2058,6 +2124,7 @@ size_t fillOutputBufferImpl(tr_peerMsgsImpl* msgs, time_t now_sec, uint64_t now_
     {
         req = msgs->peer_requested_.front();
         msgs->peer_requested_.erase(std::begin(msgs->peer_requested_));
+        msgs->note_request_queue_state(now_msec);
 
         if (msgs->isValidRequest(req) && msgs->torrent->hasPiece(req.index))
         {

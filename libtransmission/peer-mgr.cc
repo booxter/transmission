@@ -2289,6 +2289,16 @@ struct UploadPeerDiagnostics
     uint64_t request_messages_seen = 0U;
     uint64_t request_bytes_seen = 0U;
     uint64_t request_queue_high_watermark = 0U;
+    uint64_t current_request_queue_depth = 0U;
+    uint64_t ms_since_last_request_message = 0U;
+    uint64_t ms_since_peer_interested_change = 0U;
+    uint64_t ms_since_peer_choke_change = 0U;
+    uint64_t ms_since_request_queue_became_empty = 0U;
+    uint64_t ms_since_request_queue_became_nonempty = 0U;
+    uint64_t peer_interested_transitions = 0U;
+    uint64_t peer_choke_transitions = 0U;
+    bool has_peer_advertised_reqq = false;
+    uint64_t peer_advertised_reqq = 0U;
     uint64_t rejected_request_blocks_peer_choked = 0U;
     uint64_t rejected_request_blocks_reqq_full = 0U;
     uint64_t rejected_request_blocks_invalid = 0U;
@@ -2308,6 +2318,7 @@ struct UploadPeerDiagnostics
     uint64_t request_blocks = 0U;
     uint64_t piece_bytes = 0U;
     uint64_t protocol_bytes = 0U;
+    uint64_t uploadable_bytes_to_peer = 0U;
     uint64_t upload_rate_bps = 0U;
 };
 
@@ -2369,6 +2380,27 @@ struct UploadPeerDiagnostics
     }
 
     return false;
+}
+
+[[nodiscard]] uint64_t uploadable_bytes_to_peer(tr_torrent const* tor, tr_peerMsgs const* peer)
+{
+    if (!tor->hasMetainfo())
+    {
+        return 0U;
+    }
+
+    auto const& peer_have = peer->has();
+    auto uploadable = uint64_t{};
+
+    for (tr_piece_index_t piece = 0, n = tor->pieceCount(); piece < n; ++piece)
+    {
+        if (tor->hasPiece(piece) && !peer_have.test(piece))
+        {
+            uploadable += tor->pieceSize(piece);
+        }
+    }
+
+    return uploadable;
 }
 
 [[nodiscard]] auto format_high_swarm_diagnostics(std::vector<HighSwarmDiagnostics> const& diagnostics)
@@ -2437,7 +2469,8 @@ struct UploadPeerDiagnostics
         formatted += fmt::format(
             FMT_STRING(
                 "{}tor{}@{}{{I{} C{} S{} BW{} W{} wr:[b:{} p:{} e:{} r:{}] rd:[ev:{} sys:{} b:{} p:{} e:{} r:{}] "
-                "src:[rq:{}/{} qhi:{} req+:{}/{} rej:{}/{}/{} stg:{}/{} stop:{} buf:{}/{}/{}] req:{} piece:{} proto:{} up:{}}}{:s}"),
+                "ctx:[reqq:{} upb:{} age:{{rq:{} i:{} c:{} q0:{} q1:{}}} tr:{}/{}] "
+                "src:[rq:{}/{} q:{}/{} req+:{}/{} rej:{}/{}/{} stg:{}/{} stop:{} buf:{}/{}/{}] req:{} piece:{} proto:{} up:{}}}{:s}"),
             include_priority ? fmt::format("{}:", format_priority_short_name(peer.priority)) : ""s,
             peer.torrent_id,
             peer.display_name,
@@ -2456,8 +2489,18 @@ struct UploadPeerDiagnostics
             peer.read_piece_bytes,
             peer.last_read_error_code,
             peer.last_read_error_retryable ? 1 : 0,
+            format_optional_u64(peer.has_peer_advertised_reqq, peer.peer_advertised_reqq),
+            peer.uploadable_bytes_to_peer,
+            peer.ms_since_last_request_message,
+            peer.ms_since_peer_interested_change,
+            peer.ms_since_peer_choke_change,
+            peer.ms_since_request_queue_became_empty,
+            peer.ms_since_request_queue_became_nonempty,
+            peer.peer_interested_transitions,
+            peer.peer_choke_transitions,
             peer.request_messages_seen,
             peer.request_bytes_seen,
+            peer.current_request_queue_depth,
             peer.request_queue_high_watermark,
             peer.accepted_request_blocks,
             peer.accepted_request_bytes,
@@ -2698,6 +2741,16 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                 .request_messages_seen = pipeline.request_messages_seen,
                 .request_bytes_seen = pipeline.request_bytes_seen,
                 .request_queue_high_watermark = pipeline.request_queue_high_watermark,
+                .current_request_queue_depth = pipeline.current_request_queue_depth,
+                .ms_since_last_request_message = pipeline.ms_since_last_request_message,
+                .ms_since_peer_interested_change = pipeline.ms_since_peer_interested_change,
+                .ms_since_peer_choke_change = pipeline.ms_since_peer_choke_change,
+                .ms_since_request_queue_became_empty = pipeline.ms_since_request_queue_became_empty,
+                .ms_since_request_queue_became_nonempty = pipeline.ms_since_request_queue_became_nonempty,
+                .peer_interested_transitions = pipeline.peer_interested_transitions,
+                .peer_choke_transitions = pipeline.peer_choke_transitions,
+                .has_peer_advertised_reqq = pipeline.has_peer_advertised_reqq,
+                .peer_advertised_reqq = pipeline.peer_advertised_reqq,
                 .rejected_request_blocks_peer_choked = pipeline.rejected_request_blocks_peer_choked,
                 .rejected_request_blocks_reqq_full = pipeline.rejected_request_blocks_reqq_full,
                 .rejected_request_blocks_invalid = pipeline.rejected_request_blocks_invalid,
@@ -2717,6 +2770,7 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
                 .request_blocks = n_requests,
                 .piece_bytes = piece_bytes,
                 .protocol_bytes = protocol_bytes,
+                .uploadable_bytes_to_peer = uploadable_bytes_to_peer(tor, peer),
                 .upload_rate_bps = upload_rate_bps,
             };
 

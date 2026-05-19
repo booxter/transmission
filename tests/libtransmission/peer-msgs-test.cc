@@ -281,6 +281,9 @@ TEST_F(PeerMsgsTest, capturesUploadPipelinePulseDiagnostics)
     EXPECT_EQ(1U, diagnostics.request_messages_seen);
     EXPECT_EQ(length, diagnostics.request_bytes_seen);
     EXPECT_EQ(1U, diagnostics.request_queue_high_watermark);
+    EXPECT_EQ(0U, diagnostics.current_request_queue_depth);
+    EXPECT_FALSE(diagnostics.has_peer_advertised_reqq);
+    EXPECT_EQ(0U, diagnostics.peer_advertised_reqq);
     EXPECT_EQ(1U, diagnostics.staged_piece_blocks);
     EXPECT_EQ(length, diagnostics.staged_piece_bytes);
     EXPECT_GE(diagnostics.read_syscalls, 1U);
@@ -340,6 +343,7 @@ TEST_F(PeerMsgsTest, recordsMissingPieceStopReasonWhenReadFails)
     EXPECT_EQ(length, diagnostics.accepted_request_bytes);
     EXPECT_EQ(1U, diagnostics.request_messages_seen);
     EXPECT_EQ(length, diagnostics.request_bytes_seen);
+    EXPECT_EQ(0U, diagnostics.current_request_queue_depth);
     EXPECT_EQ(0U, diagnostics.staged_piece_blocks);
     EXPECT_EQ(0U, diagnostics.staged_piece_bytes);
     EXPECT_EQ(tr_peerMsgs::UploadFillStopReason::MissingPiece, diagnostics.fill_stop_reason);

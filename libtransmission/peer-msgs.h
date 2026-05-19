@@ -46,12 +46,22 @@ public:
     {
         uint64_t request_messages_seen = 0U;
         uint64_t request_bytes_seen = 0U;
+        uint64_t current_request_queue_depth = 0U;
         uint64_t accepted_request_blocks = 0U;
         uint64_t accepted_request_bytes = 0U;
         uint64_t rejected_request_blocks_peer_choked = 0U;
         uint64_t rejected_request_blocks_reqq_full = 0U;
         uint64_t rejected_request_blocks_invalid = 0U;
         uint64_t request_queue_high_watermark = 0U;
+        uint64_t ms_since_last_request_message = 0U;
+        uint64_t ms_since_peer_interested_change = 0U;
+        uint64_t ms_since_peer_choke_change = 0U;
+        uint64_t ms_since_request_queue_became_empty = 0U;
+        uint64_t ms_since_request_queue_became_nonempty = 0U;
+        uint64_t peer_interested_transitions = 0U;
+        uint64_t peer_choke_transitions = 0U;
+        size_t peer_advertised_reqq = 0U;
+        bool has_peer_advertised_reqq = false;
         uint64_t staged_piece_blocks = 0U;
         uint64_t staged_piece_bytes = 0U;
         uint64_t read_ready_events = 0U;
