@@ -11,12 +11,16 @@
 #include <deque>
 #include <limits>
 #include <memory>
+#include <string>
 #include <unordered_set>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include "bandwidth-scheduler.h"
 #include "bandwidth.h"
 #include "crypto-utils.h"
+#include "log.h"
 #include "peer-io.h"
 #include "session.h"
 #include "strict-bandwidth-curve.h"
@@ -62,6 +66,29 @@ namespace
 [[nodiscard]] constexpr auto direction_index(tr_direction dir) noexcept
 {
     return dir == TR_UP ? size_t{ 0U } : size_t{ 1U };
+}
+
+using PriorityCounters = std::array<uint64_t, 3>;
+
+[[nodiscard]] auto format_priority_counters(PriorityCounters const& counters)
+{
+    return fmt::format("[{},{},{}]", counters[0], counters[1], counters[2]);
+}
+
+[[nodiscard]] constexpr auto to_string(tr_strict_bandwidth_curve_adjustment adjustment) noexcept
+{
+    switch (adjustment)
+    {
+    case tr_strict_bandwidth_curve_adjustment::Tighten:
+        return "tighten";
+
+    case tr_strict_bandwidth_curve_adjustment::Relax:
+        return "relax";
+
+    case tr_strict_bandwidth_curve_adjustment::Hold:
+    default:
+        return "hold";
+    }
 }
 
 class tr_legacy_bandwidth_scheduler final : public tr_bandwidth_scheduler
@@ -201,6 +228,89 @@ private:
         return std::min(a, b);
     }
 
+    [[nodiscard]] auto diagnostics_enabled() const noexcept
+    {
+        return session_.strictBandwidthDiagnosticsEnabled();
+    }
+
+    void maybe_log_curve_diagnostics()
+    {
+        if (!diagnostics_enabled() || pulse_duration_msec_ == 0U)
+        {
+            return;
+        }
+
+        auto const snapshot = retention_policy_->snapshot();
+        tr_logAddInfo(
+            fmt::format(
+                "strict-scheduler pulse up:{} down:{}",
+                format_direction_diagnostics(TR_UP, snapshot.by_direction[direction_index(TR_UP)], snapshot.is_dynamic),
+                format_direction_diagnostics(TR_DOWN, snapshot.by_direction[direction_index(TR_DOWN)], snapshot.is_dynamic)),
+            "bandwidth-scheduler");
+    }
+
+    [[nodiscard]] std::string format_direction_diagnostics(
+        tr_direction dir,
+        tr_strict_bandwidth_curve_policy_snapshot::DirectionState const& state,
+        bool is_dynamic) const
+    {
+        auto const index = direction_index(dir);
+        auto const& outcome = current_pulse_outcome_.by_direction[index];
+        auto const budget = current_pulse_budget_[index];
+        auto const piece_total = outcome.piece_bytes[0] + outcome.piece_bytes[1] + outcome.piece_bytes[2];
+        auto const utilization = budget == 0U ? uint64_t{ 0U } : piece_total * 100U / budget;
+
+        auto const piece = PriorityCounters{
+            static_cast<uint64_t>(outcome.piece_bytes[0]),
+            static_cast<uint64_t>(outcome.piece_bytes[1]),
+            static_cast<uint64_t>(outcome.piece_bytes[2]),
+        };
+        auto const blocked = PriorityCounters{
+            outcome.had_blocked_work[0] ? 1U : 0U,
+            outcome.had_blocked_work[1] ? 1U : 0U,
+            outcome.had_blocked_work[2] ? 1U : 0U,
+        };
+        auto const pending = PriorityCounters{
+            outcome.has_pending_work[0] ? 1U : 0U,
+            outcome.has_pending_work[1] ? 1U : 0U,
+            outcome.has_pending_work[2] ? 1U : 0U,
+        };
+
+        if (budget == 0U && piece_total == 0U && blocked == PriorityCounters{} && pending == PriorityCounters{})
+        {
+            return fmt::format("off");
+        }
+
+        if (!is_dynamic)
+        {
+            return fmt::format(
+                "budget={} util={} piece={} blocked={} pending={} curve={{fixed p=[{:.2f},{:.2f}]}}",
+                budget,
+                utilization,
+                format_priority_counters(piece),
+                format_priority_counters(blocked),
+                format_priority_counters(pending),
+                state.normal_low_exponent,
+                state.low_exponent);
+        }
+
+        return fmt::format(
+            "budget={} util={} piece={} blocked={} pending={} "
+            "curve={{dynamic p=[{:.2f},{:.2f}] win=[{},{},{},{}] last={}}}",
+            budget,
+            utilization,
+            format_priority_counters(piece),
+            format_priority_counters(blocked),
+            format_priority_counters(pending),
+            state.normal_low_exponent,
+            state.low_exponent,
+            state.window_pulses,
+            state.fully_utilized_pulses,
+            state.high_pressure_pulses,
+            state.underfilled_lower_demand_pulses,
+            to_string(state.last_adjustment));
+    }
+
     template<typename QueueContainer>
     void note_pending_curve_work(QueueContainer const& queues, tr_direction dir)
     {
@@ -223,6 +333,7 @@ private:
         note_pending_curve_work(read_queues_, TR_DOWN);
         note_pending_curve_work(write_queues_, TR_UP);
         retention_policy_->on_pulse_finish(current_pulse_outcome_);
+        maybe_log_curve_diagnostics();
     }
 
     void reset_limited_retention(uint64_t period_msec)
@@ -233,6 +344,7 @@ private:
         pulse_duration_msec_ = period_msec;
         pulse_deadline_msec_ = pulse_start_msec_ + period_msec;
         current_pulse_outcome_ = {};
+        current_pulse_budget_ = {};
 
         auto pulse = tr_strict_bandwidth_curve_pulse{};
         pulse.start_msec = pulse_start_msec_;
@@ -247,6 +359,7 @@ private:
 
             auto const pulse_budget = static_cast<size_t>(
                 session_.top_bandwidth_.getDesiredSpeedBytesPerSecond(dir) * period_msec / 1000U);
+            current_pulse_budget_[direction_index(dir)] = pulse_budget;
             if (dir == TR_UP)
             {
                 pulse.up_budget = pulse_budget;
@@ -603,6 +716,7 @@ private:
     std::unordered_set<tr_peerIo*> queued_reads_;
     std::unordered_set<tr_peerIo*> queued_writes_;
     tr_strict_bandwidth_curve_pulse_outcome current_pulse_outcome_ = {};
+    std::array<size_t, 2> current_pulse_budget_ = {};
     uint64_t pulse_start_msec_ = 0U;
     uint64_t pulse_duration_msec_ = 0U;
     uint64_t pulse_deadline_msec_ = 0U;

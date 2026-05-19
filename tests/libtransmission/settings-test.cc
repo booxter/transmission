@@ -293,6 +293,38 @@ TEST_F(SettingsTest, invalidStrictBandwidthCurveFallsBackToBalancedAndWarns)
     EXPECT_TRUE(warned);
 }
 
+TEST_F(SettingsTest, canLoadStrictBandwidthDiagnosticsEnabled)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_strict_diagnostics_enabled;
+
+    auto settings = tr_session_settings{};
+    ASSERT_FALSE(settings.bandwidth_strict_diagnostics_enabled);
+
+    auto dict = tr_variant{};
+    tr_variantInitDict(&dict, 1);
+    tr_variantDictAddBool(&dict, Key, true);
+    settings.load(&dict);
+    tr_variantClear(&dict);
+
+    EXPECT_TRUE(settings.bandwidth_strict_diagnostics_enabled);
+}
+
+TEST_F(SettingsTest, canSaveStrictBandwidthDiagnosticsEnabled)
+{
+    static auto constexpr Key = TR_KEY_bandwidth_strict_diagnostics_enabled;
+
+    auto settings = tr_session_settings{};
+    settings.bandwidth_strict_diagnostics_enabled = true;
+
+    auto dict = tr_variant{};
+    tr_variantInitDict(&dict, 100);
+    settings.save(&dict);
+    auto val = false;
+    ASSERT_TRUE(tr_variantDictFindBool(&dict, Key, &val));
+    EXPECT_TRUE(val);
+    tr_variantClear(&dict);
+}
+
 TEST_F(SettingsTest, canLoadLogLevel)
 {
     static auto constexpr Key = TR_KEY_message_level;

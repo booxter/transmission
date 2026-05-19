@@ -82,6 +82,7 @@ struct tr_variant;
       tr_strict_bandwidth_curve, \
       tr_strict_bandwidth_curve::Balanced, \
       "") \
+    V(TR_KEY_bandwidth_strict_diagnostics_enabled, bandwidth_strict_diagnostics_enabled, bool, false, "") \
     V(TR_KEY_utp_enabled, utp_enabled, bool, true, "") \
     V(TR_KEY_torrent_added_verify_mode, torrent_added_verify_mode, tr_verify_added_mode, TR_VERIFY_ADDED_FAST, "")
 

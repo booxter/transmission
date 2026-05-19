@@ -713,6 +713,11 @@ public:
         return settings_.bandwidth_strict_limited_curve;
     }
 
+    [[nodiscard]] constexpr auto strictBandwidthDiagnosticsEnabled() const noexcept
+    {
+        return settings_.bandwidth_strict_diagnostics_enabled;
+    }
+
     [[nodiscard]] constexpr auto preallocationMode() const noexcept
     {
         return settings_.preallocation_mode;

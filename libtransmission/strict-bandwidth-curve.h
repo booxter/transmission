@@ -46,6 +46,13 @@ struct tr_strict_bandwidth_curve_admit_result
     uint64_t next_wakeup_msec = 0U;
 };
 
+enum class tr_strict_bandwidth_curve_adjustment : uint8_t
+{
+    Hold,
+    Tighten,
+    Relax,
+};
+
 struct tr_strict_bandwidth_curve_pulse_outcome
 {
     struct DirectionState
@@ -96,6 +103,23 @@ private:
     }
 };
 
+struct tr_strict_bandwidth_curve_policy_snapshot
+{
+    struct DirectionState
+    {
+        double normal_low_exponent = 0.0;
+        double low_exponent = 0.0;
+        size_t window_pulses = 0U;
+        size_t fully_utilized_pulses = 0U;
+        size_t high_pressure_pulses = 0U;
+        size_t underfilled_lower_demand_pulses = 0U;
+        tr_strict_bandwidth_curve_adjustment last_adjustment = tr_strict_bandwidth_curve_adjustment::Hold;
+    };
+
+    bool is_dynamic = false;
+    std::array<DirectionState, 2> by_direction = {};
+};
+
 class tr_strict_bandwidth_curve_policy
 {
 public:
@@ -115,6 +139,7 @@ public:
     [[nodiscard]] virtual tr_strict_bandwidth_curve_admit_result admit(tr_strict_bandwidth_curve_query const& query) const = 0;
     virtual void charge(tr_strict_bandwidth_curve_charge const& charge) = 0;
     virtual void on_pulse_finish(tr_strict_bandwidth_curve_pulse_outcome const& outcome) = 0;
+    [[nodiscard]] virtual tr_strict_bandwidth_curve_policy_snapshot snapshot() const = 0;
 
 protected:
     tr_strict_bandwidth_curve_policy() = default;

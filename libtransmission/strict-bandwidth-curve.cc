@@ -24,6 +24,25 @@ struct StrictCurveParameters
     double low_exponent;
 };
 
+[[nodiscard]] auto make_snapshot_state(
+    StrictCurveParameters params,
+    size_t window_pulses = 0U,
+    size_t fully_utilized_pulses = 0U,
+    size_t high_pressure_pulses = 0U,
+    size_t underfilled_lower_demand_pulses = 0U,
+    tr_strict_bandwidth_curve_adjustment last_adjustment = tr_strict_bandwidth_curve_adjustment::Hold)
+{
+    auto state = tr_strict_bandwidth_curve_policy_snapshot::DirectionState{};
+    state.normal_low_exponent = params.normal_low_exponent;
+    state.low_exponent = params.low_exponent;
+    state.window_pulses = window_pulses;
+    state.fully_utilized_pulses = fully_utilized_pulses;
+    state.high_pressure_pulses = high_pressure_pulses;
+    state.underfilled_lower_demand_pulses = underfilled_lower_demand_pulses;
+    state.last_adjustment = last_adjustment;
+    return state;
+}
+
 [[nodiscard]] constexpr auto relaxed_curve_parameters() noexcept
 {
     return StrictCurveParameters{ 1.5, 3.0 };
@@ -246,6 +265,14 @@ public:
     {
     }
 
+    [[nodiscard]] tr_strict_bandwidth_curve_policy_snapshot snapshot() const override
+    {
+        auto snapshot = tr_strict_bandwidth_curve_policy_snapshot{};
+        snapshot.by_direction[direction_index(TR_UP)] = make_snapshot_state(params_);
+        snapshot.by_direction[direction_index(TR_DOWN)] = make_snapshot_state(params_);
+        return snapshot;
+    }
+
 protected:
     [[nodiscard]] StrictCurveParameters parameters(tr_direction) const noexcept override
     {
@@ -266,6 +293,7 @@ private:
         size_t fully_utilized_pulses = 0U;
         size_t high_pressure_pulses = 0U;
         size_t underfilled_lower_demand_pulses = 0U;
+        tr_strict_bandwidth_curve_adjustment last_adjustment = tr_strict_bandwidth_curve_adjustment::Hold;
     };
 
     static auto constexpr DynamicWindowPulses = size_t{ 4U };
@@ -284,6 +312,25 @@ public:
         {
             update_direction(dir, outcome.by_direction[direction_index(dir)]);
         }
+    }
+
+    [[nodiscard]] tr_strict_bandwidth_curve_policy_snapshot snapshot() const override
+    {
+        auto snapshot = tr_strict_bandwidth_curve_policy_snapshot{};
+        snapshot.is_dynamic = true;
+        for (auto const dir : { TR_UP, TR_DOWN })
+        {
+            auto const& state = dynamic_[direction_index(dir)];
+            snapshot.by_direction[direction_index(dir)] = make_snapshot_state(
+                state.params,
+                state.window_pulses,
+                state.fully_utilized_pulses,
+                state.high_pressure_pulses,
+                state.underfilled_lower_demand_pulses,
+                state.last_adjustment);
+        }
+
+        return snapshot;
     }
 
 protected:
@@ -327,6 +374,7 @@ private:
         {
             reset_window(state);
             state.params = balanced_curve_parameters();
+            state.last_adjustment = tr_strict_bandwidth_curve_adjustment::Hold;
             return;
         }
 
@@ -347,15 +395,18 @@ private:
             return;
         }
 
+        state.last_adjustment = tr_strict_bandwidth_curve_adjustment::Hold;
         if (state.underfilled_lower_demand_pulses * 2U >= state.window_pulses)
         {
             relax(state);
+            state.last_adjustment = tr_strict_bandwidth_curve_adjustment::Relax;
         }
         else if (
             state.fully_utilized_pulses * 4U >= state.window_pulses * 3U &&
             state.high_pressure_pulses * 2U >= state.window_pulses)
         {
             tighten(state);
+            state.last_adjustment = tr_strict_bandwidth_curve_adjustment::Tighten;
         }
 
         reset_window(state);

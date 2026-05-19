@@ -202,6 +202,18 @@ TEST(StrictBandwidthCurvePolicyTest, NonApplyingWorkIsNeverCurveGated)
     EXPECT_EQ(0U, result.next_wakeup_msec);
 }
 
+TEST(StrictBandwidthCurvePolicyTest, fixedSnapshotReportsPresetParameters)
+{
+    auto policy = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Aggressive, 3000U, 1024U);
+
+    auto const snapshot = policy->snapshot();
+
+    EXPECT_FALSE(snapshot.is_dynamic);
+    EXPECT_DOUBLE_EQ(3.0, snapshot.by_direction[0].normal_low_exponent);
+    EXPECT_DOUBLE_EQ(6.0, snapshot.by_direction[0].low_exponent);
+    EXPECT_EQ(tr_strict_bandwidth_curve_adjustment::Hold, snapshot.by_direction[0].last_adjustment);
+}
+
 TEST(StrictBandwidthCurvePolicyTest, dynamicStartsFromBalancedCurve)
 {
     auto dynamic = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Dynamic, 3000U, 1024U);
@@ -222,6 +234,24 @@ TEST(StrictBandwidthCurvePolicyTest, dynamicStartsFromBalancedCurve)
 
     EXPECT_EQ(balanced_result.piece_limit, dynamic_result.piece_limit);
     EXPECT_EQ(balanced_result.next_wakeup_msec, dynamic_result.next_wakeup_msec);
+}
+
+TEST(StrictBandwidthCurvePolicyTest, dynamicSnapshotReportsWindowStateAndAdjustment)
+{
+    auto dynamic = tr_strict_bandwidth_curve_policy::create(tr_strict_bandwidth_curve::Dynamic, 3000U, 1024U);
+
+    auto outcome = tr_strict_bandwidth_curve_pulse_outcome{};
+    outcome.note_piece_bytes(TR_UP, TR_PRI_HIGH, 5000U);
+    outcome.note_piece_bytes(TR_UP, TR_PRI_NORMAL, 1000U);
+    outcome.note_pending(TR_UP, TR_PRI_HIGH);
+    feed_pulse_outcome(*dynamic, outcome, 4U);
+
+    auto const snapshot = dynamic->snapshot();
+
+    EXPECT_TRUE(snapshot.is_dynamic);
+    EXPECT_GT(snapshot.by_direction[0].normal_low_exponent, 2.0);
+    EXPECT_EQ(0U, snapshot.by_direction[0].window_pulses);
+    EXPECT_EQ(tr_strict_bandwidth_curve_adjustment::Tighten, snapshot.by_direction[0].last_adjustment);
 }
 
 TEST(StrictBandwidthCurvePolicyTest, dynamicTightensAfterSustainedHighPressure)

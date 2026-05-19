@@ -51,6 +51,7 @@ enum
     TR_KEY_bandwidth_priority,
     TR_KEY_bandwidthPriority,
     TR_KEY_bandwidth_allocator, /* settings */
+    TR_KEY_bandwidth_strict_diagnostics_enabled, /* settings */
     TR_KEY_bandwidth_strict_limited_curve, /* settings */
     TR_KEY_bind_address_ipv4,
     TR_KEY_bind_address_ipv6,
