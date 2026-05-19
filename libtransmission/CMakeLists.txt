@@ -113,6 +113,8 @@ target_sources(${TR_NAME}
         session-id.cc
         session-id.h
         session-settings.cc
+        strict-bandwidth-curve.cc
+        strict-bandwidth-curve.h
         session-thread.cc
         session-thread.h
         session.cc

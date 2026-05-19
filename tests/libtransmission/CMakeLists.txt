@@ -43,6 +43,7 @@ target_sources(libtransmission-test
         session-test.cc
         session-alt-speeds-test.cc
         settings-test.cc
+        strict-bandwidth-curve-test.cc
         strbuf-test.cc
         subprocess-test-script.cmd
         subprocess-test.cc
