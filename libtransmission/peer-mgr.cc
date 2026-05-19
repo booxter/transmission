@@ -2236,6 +2236,34 @@ struct UploadSourceDiagnostics
     PriorityTotals upload_rate_bps;
 };
 
+struct HighSwarmDiagnostics
+{
+    tr_torrent_id_t torrent_id = {};
+    uint64_t connected = 0U;
+    uint64_t eligible = 0U;
+    uint64_t sending = 0U;
+    uint64_t request_peers = 0U;
+    uint64_t request_blocks = 0U;
+    uint64_t piece_peers = 0U;
+    uint64_t piece_bytes = 0U;
+    uint64_t protocol_peers = 0U;
+    uint64_t protocol_bytes = 0U;
+    uint64_t upload_rate_bps = 0U;
+};
+
+struct HighPeerDiagnostics
+{
+    tr_torrent_id_t torrent_id = {};
+    std::string display_name;
+    bool is_seed = false;
+    bool is_interested = false;
+    bool is_choked = false;
+    uint64_t request_blocks = 0U;
+    uint64_t piece_bytes = 0U;
+    uint64_t protocol_bytes = 0U;
+    uint64_t upload_rate_bps = 0U;
+};
+
 [[nodiscard]] bool swarm_has_upload_demand(tr_swarm const* swarm, uint64_t now_msec)
 {
     auto const* const tor = swarm->tor;
@@ -2255,6 +2283,68 @@ struct UploadSourceDiagnostics
     return false;
 }
 
+[[nodiscard]] auto format_high_swarm_diagnostics(std::vector<HighSwarmDiagnostics> const& diagnostics)
+{
+    auto formatted = std::string{};
+    auto first = true;
+
+    for (auto const& swarm : diagnostics)
+    {
+        if (!first)
+        {
+            formatted += ", ";
+        }
+
+        first = false;
+        formatted += fmt::format(
+            FMT_STRING(
+                "tor{}{{conn:{} elig:{} send:{} reqp:{} reqb:{} piecep:{} pieceb:{} "
+                "protop:{} protob:{} up:{}}}"),
+            swarm.torrent_id,
+            swarm.connected,
+            swarm.eligible,
+            swarm.sending,
+            swarm.request_peers,
+            swarm.request_blocks,
+            swarm.piece_peers,
+            swarm.piece_bytes,
+            swarm.protocol_peers,
+            swarm.protocol_bytes,
+            swarm.upload_rate_bps);
+    }
+
+    return formatted;
+}
+
+[[nodiscard]] auto format_high_peer_diagnostics(std::vector<HighPeerDiagnostics> const& diagnostics)
+{
+    auto formatted = std::string{};
+    auto first = true;
+
+    for (auto const& peer : diagnostics)
+    {
+        if (!first)
+        {
+            formatted += ", ";
+        }
+
+        first = false;
+        formatted += fmt::format(
+            FMT_STRING("tor{}@{}{{I{} C{} S{} req:{} piece:{} proto:{} up:{}}}"),
+            peer.torrent_id,
+            peer.display_name,
+            peer.is_interested ? 1 : 0,
+            peer.is_choked ? 1 : 0,
+            peer.is_seed ? 1 : 0,
+            peer.request_blocks,
+            peer.piece_bytes,
+            peer.protocol_bytes,
+            peer.upload_rate_bps);
+    }
+
+    return formatted;
+}
+
 void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t now_msec)
 {
     auto const* const session = mgr->session;
@@ -2264,6 +2354,8 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
     }
 
     auto diagnostics = UploadSourceDiagnostics{};
+    auto high_swarms = std::vector<HighSwarmDiagnostics>{};
+    auto high_peers = std::vector<HighPeerDiagnostics>{};
 
     for (auto* const tor : session->torrents())
     {
@@ -2289,13 +2381,34 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             diagnostics.swarms_with_demand.add(priority);
         }
 
+        auto high_swarm = HighSwarmDiagnostics{};
+        auto keep_high_swarm = false;
+
+        if (priority == TR_PRI_HIGH)
+        {
+            high_swarm.torrent_id = tor->id();
+        }
+
         for (auto const* peer : swarm->peers)
         {
             diagnostics.peers_connected.add(priority);
+            if (priority == TR_PRI_HIGH)
+            {
+                ++high_swarm.connected;
+            }
 
-            if (!peer->isSeed() && peer->is_peer_interested() && !peer->is_peer_choked())
+            auto const is_seed = peer->isSeed();
+            auto const is_interested = peer->is_peer_interested();
+            auto const is_choked = peer->is_peer_choked();
+
+            if (!is_seed && is_interested && !is_choked)
             {
                 diagnostics.peers_eligible.add(priority);
+                if (priority == TR_PRI_HIGH)
+                {
+                    ++high_swarm.eligible;
+                    keep_high_swarm = true;
+                }
             }
 
             auto const upload_rate_bps = peer->get_piece_speed_bytes_per_second(now_msec, TR_CLIENT_TO_PEER);
@@ -2303,25 +2416,73 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             if (upload_rate_bps != 0U)
             {
                 diagnostics.peers_sending.add(priority);
+                if (priority == TR_PRI_HIGH)
+                {
+                    ++high_swarm.sending;
+                    high_swarm.upload_rate_bps += upload_rate_bps;
+                    keep_high_swarm = true;
+                }
             }
 
-            if (auto const n_requests = peer->activeReqCount(TR_PEER_TO_CLIENT); n_requests != 0U)
+            auto const n_requests = peer->activeReqCount(TR_PEER_TO_CLIENT);
+            if (n_requests != 0U)
             {
                 diagnostics.peers_with_requests.add(priority);
                 diagnostics.request_blocks.add(priority, n_requests);
+                if (priority == TR_PRI_HIGH)
+                {
+                    ++high_swarm.request_peers;
+                    high_swarm.request_blocks += n_requests;
+                    keep_high_swarm = true;
+                }
             }
 
-            if (auto const piece_bytes = peer->pending_piece_output_size(); piece_bytes != 0U)
+            auto const piece_bytes = peer->pending_piece_output_size();
+            if (piece_bytes != 0U)
             {
                 diagnostics.peers_with_piece_output.add(priority);
                 diagnostics.piece_output_bytes.add(priority, piece_bytes);
+                if (priority == TR_PRI_HIGH)
+                {
+                    ++high_swarm.piece_peers;
+                    high_swarm.piece_bytes += piece_bytes;
+                    keep_high_swarm = true;
+                }
             }
 
-            if (auto const protocol_bytes = peer->pending_protocol_output_size(); protocol_bytes != 0U)
+            auto const protocol_bytes = peer->pending_protocol_output_size();
+            if (protocol_bytes != 0U)
             {
                 diagnostics.peers_with_protocol_output.add(priority);
                 diagnostics.protocol_output_bytes.add(priority, protocol_bytes);
+                if (priority == TR_PRI_HIGH)
+                {
+                    ++high_swarm.protocol_peers;
+                    high_swarm.protocol_bytes += protocol_bytes;
+                    keep_high_swarm = true;
+                }
             }
+
+            if (priority == TR_PRI_HIGH && (keep_high_swarm || is_interested || is_choked))
+            {
+                high_peers.emplace_back(
+                    HighPeerDiagnostics{
+                        .torrent_id = tor->id(),
+                        .display_name = peer->display_name(),
+                        .is_seed = is_seed,
+                        .is_interested = is_interested,
+                        .is_choked = is_choked,
+                        .request_blocks = n_requests,
+                        .piece_bytes = piece_bytes,
+                        .protocol_bytes = protocol_bytes,
+                        .upload_rate_bps = upload_rate_bps,
+                    });
+            }
+        }
+
+        if (priority == TR_PRI_HIGH && (keep_high_swarm || swarm_has_upload_demand(swarm, now_msec)))
+        {
+            high_swarms.emplace_back(high_swarm);
         }
     }
 
@@ -2346,6 +2507,47 @@ void maybe_log_strict_upload_source_diagnostics(tr_peerMgr const* mgr, uint64_t 
             diagnostics.protocol_output_bytes.format(),
             diagnostics.upload_rate_bps.format()),
         "peer-mgr");
+
+    if (!std::empty(high_swarms) || !std::empty(high_peers))
+    {
+        auto const max_swarms = size_t{ 8U };
+        auto const max_peers = size_t{ 12U };
+
+        std::sort(
+            std::begin(high_swarms),
+            std::end(high_swarms),
+            [](auto const& a, auto const& b)
+            {
+                return std::tie(a.request_blocks, a.piece_bytes, a.upload_rate_bps, a.eligible) >
+                    std::tie(b.request_blocks, b.piece_bytes, b.upload_rate_bps, b.eligible);
+            });
+        std::sort(
+            std::begin(high_peers),
+            std::end(high_peers),
+            [](auto const& a, auto const& b)
+            {
+                return std::tuple{
+                    a.request_blocks, a.piece_bytes, a.upload_rate_bps, a.is_interested, !a.is_choked,
+                } > std::tuple{
+                    b.request_blocks, b.piece_bytes, b.upload_rate_bps, b.is_interested, !b.is_choked,
+                };
+            });
+
+        auto const swarm_count = std::min(std::size(high_swarms), max_swarms);
+        auto const peer_count = std::min(std::size(high_peers), max_peers);
+        auto limited_swarms = std::vector<HighSwarmDiagnostics>{ std::begin(high_swarms),
+                                                                 std::begin(high_swarms) + swarm_count };
+        auto limited_peers = std::vector<HighPeerDiagnostics>{ std::begin(high_peers), std::begin(high_peers) + peer_count };
+
+        tr_logAddInfo(
+            fmt::format(
+                "strict-upload-high-detail swarms=[{}]{} peers=[{}]{}",
+                format_high_swarm_diagnostics(limited_swarms),
+                std::size(high_swarms) > swarm_count ? fmt::format(", +{} more", std::size(high_swarms) - swarm_count) : ""sv,
+                format_high_peer_diagnostics(limited_peers),
+                std::size(high_peers) > peer_count ? fmt::format(", +{} more", std::size(high_peers) - peer_count) : ""sv),
+            "peer-mgr");
+    }
 }
 
 void pumpAllPeers(tr_peerMgr* mgr)
